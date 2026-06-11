@@ -1,0 +1,16 @@
+name = "fort-card"
+main = "src/worker.js"
+compatibility_date = "2026-06-01"
+
+# 1. Create a KV namespace and paste its id here:
+#      npx wrangler kv namespace create VAULT
+kv_namespaces = [
+  { binding = "VAULT", id = "PASTE_YOUR_KV_NAMESPACE_ID_HERE" }
+]
+
+# 2. Set the two secrets (NEVER commit these):
+#      npx wrangler secret put FORT_KEY      # an admin bearer token you choose
+#      npx wrangler secret put MASTER_KEY    # base64 of 32 random bytes:  openssl rand -base64 32
+#
+# 3. Deploy:
+#      npx wrangler deploy

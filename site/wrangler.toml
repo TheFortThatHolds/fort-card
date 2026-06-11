@@ -1,0 +1,5 @@
+name = "fort-card-site"
+main = "worker.js"
+compatibility_date = "2026-06-01"
+# Optional: serve on your own domain
+# routes = [ { pattern = "card.yourdomain.com", custom_domain = true } ]
