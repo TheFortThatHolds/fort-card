@@ -5,20 +5,36 @@
 // injected server-side and the upstream response is returned — the caller NEVER sees the
 // key. Steal a card → it's locked to one host, capped, and freezable. Steal a key → game over.
 //
+// HUMAN-IN-THE-LOOP. A per-card limit means nothing if the holder can mint a fresh card or
+// refill its own allowance — so ISSUING and RE-AUTHORIZING (unfreezing) a card are OWNER acts.
+// This single-file worker tells human from agent by WHICH TOKEN is presented:
+//   • FORT_KEY        the owner. Issues ACTIVE cards, approves/unfreezes, stores secrets.
+//   • FORT_AGENT_KEY  (optional) an agent. May request/use/freeze/revoke — but a card it
+//                     issues is PENDING (inert) until the owner approves it in the wallet.
+// If FORT_AGENT_KEY is unset, only the owner token works and every issue is active (the old
+// single-token behaviour, unchanged).
+//
+// Every act writes a line to the STATEMENT — an append-only events ledger (GET /events). The
+// ledger never contains a key or a secret value; it's the audit trail, not the vault.
+//
 // One file, no dependencies, runs on Cloudflare Workers. Fork it, read it, run your own.
 //
-// HTTP API (all routes require  Authorization: Bearer <FORT_KEY>):
-//   POST   /secrets            {name, value}                       store a secret (encrypted at rest)
-//   POST   /cards              {name, secret, allowed_hosts, ...}  issue a card
+// HTTP API (all routes require  Authorization: Bearer <FORT_KEY | FORT_AGENT_KEY>):
+//   POST   /secrets            {name, value}                       store a secret (owner only)
+//   POST   /cards              {name, secret, allowed_hosts, ...}  issue (owner) / request (agent)
 //   GET    /cards                                                  list cards (never the key)
+//   GET    /events             ?limit=N                            the statement (audit ledger)
 //   POST   /cards/:id/use      {url, method?, headers?, body?}     charge: authorize + settle
-//   POST   /cards/:id/freeze   {frozen}                            freeze / unfreeze (kill switch)
+//   POST   /cards/:id/freeze   {frozen}                            freeze (any) / unfreeze (owner)
 //   DELETE /cards/:id                                              revoke
 //
 // Bindings (see wrangler.toml):
 //   KV namespace `VAULT`
-//   secret `FORT_KEY`    admin bearer token you choose
-//   secret `MASTER_KEY`  base64 of 32 random bytes:  openssl rand -base64 32
+//   secret `FORT_KEY`        owner bearer token you choose
+//   secret `FORT_AGENT_KEY`  (optional) agent bearer token — its issues land pending
+//   secret `MASTER_KEY`      base64 of 32 random bytes:  openssl rand -base64 32
+//   var    `NOTIFY_WEBHOOK`   (optional) URL that gets a JSON POST when an agent requests a card
+//                             (best-effort; the hosted Core fans this out to email + web-push)
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
@@ -26,6 +42,11 @@ const b64e = (buf) => btoa(String.fromCharCode(...new Uint8Array(buf)));
 const b64d = (s) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
 const json = (o, status = 200) =>
   new Response(JSON.stringify(o, null, 2), { status, headers: { "Content-Type": "application/json" } });
+
+const HUMAN_REQUIRED =
+  "Human-in-the-loop required: issuing or re-authorizing a Fort Card is an owner act. " +
+  "Present the owner token (FORT_KEY) to do it — an agent token cannot issue an active " +
+  "card, store a secret, or refill its own allowance. (Agents may use, freeze, and revoke.)";
 
 async function masterKey(env) {
   return crypto.subtle.importKey("raw", b64d(env.MASTER_KEY), { name: "AES-GCM" }, false, ["encrypt", "decrypt"]);
@@ -40,6 +61,32 @@ async function decrypt(env, s) {
   return dec.decode(pt);
 }
 
+// ── the statement: an append-only ledger of every act (never a key, never a secret value) ──
+async function logEvent(env, type, data) {
+  const ts = new Date().toISOString();
+  // ts-prefixed key → KV lists lexicographically, so we can read newest-first by reversing.
+  await env.VAULT.put("event:" + ts + ":" + crypto.randomUUID().slice(0, 8), JSON.stringify({ ts, type, ...data }));
+}
+
+// best-effort owner notification when an agent requests a card; never blocks issuance.
+async function notifyCardRequest(env, card) {
+  if (!env.NOTIFY_WEBHOOK) return;
+  const limit = card.limit != null ? String(card.limit) : "unlimited";
+  try {
+    await fetch(env.NOTIFY_WEBHOOK, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        kind: "fort-card.request",
+        text: `Fort Card approval needed: ${card.name} → ${card.allowed_hosts.join(", ")} (limit ${limit})`,
+        card: { id: card.id, name: card.name, secret: card.secret, allowed_hosts: card.allowed_hosts, limit: card.limit },
+      }),
+    });
+  } catch {
+    /* never block card creation on a notification */
+  }
+}
+
 export default {
   async fetch(request, env) {
     if (!env.MASTER_KEY || !env.FORT_KEY) {
@@ -48,57 +95,81 @@ export default {
     const url = new URL(request.url);
     const path = url.pathname.replace(/\/+$/, "") || "/";
 
-    if (path === "/" ) return json({ name: "fort-card", ok: true, docs: "https://github.com/TheFortThatHolds/fort-card" });
+    if (path === "/") return json({ name: "fort-card", ok: true, docs: "https://github.com/TheFortThatHolds/fort-card" });
 
-    // Every route is admin-gated by a bearer token you set.
-    if ((request.headers.get("Authorization") || "") !== "Bearer " + env.FORT_KEY) {
-      return json({ error: "unauthorized" }, 401);
-    }
+    // Every route is gated by a bearer token. The owner token is the human; an optional agent
+    // token is the everyday non-human caller. We carry `human` through the request from here.
+    const auth = request.headers.get("Authorization") || "";
+    const human = auth === "Bearer " + env.FORT_KEY;
+    const agent = !!env.FORT_AGENT_KEY && auth === "Bearer " + env.FORT_AGENT_KEY;
+    if (!human && !agent) return json({ error: "unauthorized" }, 401);
     const body = request.method === "GET" ? {} : await request.json().catch(() => ({}));
 
-    // ── store a secret (encrypted; the value never comes back out) ──
+    // ── store a secret (owner only — seeding a real key into the vault is a human act) ──
     if (path === "/secrets" && request.method === "POST") {
+      if (!human) return json({ error: HUMAN_REQUIRED }, 403);
       if (!body.name || !body.value) return json({ error: "name and value required" }, 400);
       await env.VAULT.put("secret:" + body.name, JSON.stringify(await encrypt(env, String(body.value))));
+      await logEvent(env, "secret.store", { name: body.name }); // name only — never the value
       return json({ ok: true, name: body.name });
     }
 
-    // ── issue a card (a limited, host-locked pointer at a secret) ──
+    // ── issue a card (owner → active; agent → pending, inert until the owner approves) ──
     if (path === "/cards" && request.method === "POST") {
       if (!body.name || !body.secret || !Array.isArray(body.allowed_hosts) || body.allowed_hosts.length === 0) {
         return json({ error: "name, secret, and a non-empty allowed_hosts array are required" }, 400);
       }
+      const pending = !human; // an agent can ask, but never mint its own live allowance
       const id = "card_" + crypto.randomUUID().slice(0, 8);
       const card = {
         id,
         name: body.name,
         secret: body.secret,
+        holder: body.holder || null,
         allowed_hosts: body.allowed_hosts.map(String),
         header: body.header || "Authorization",
         header_prefix: body.header_prefix ?? "Bearer ",
         limit: typeof body.limit === "number" ? body.limit : null,
         used: 0,
         expires_at: body.expires_at || null,
-        frozen: false,
+        frozen: pending, // pending cards are inert until approved
+        pending,
         created: new Date().toISOString(),
       };
       await env.VAULT.put("card:" + id, JSON.stringify(card));
+      await logEvent(env, pending ? "card.request" : "card.issue", {
+        id, name: card.name, secret: card.secret, holder: card.holder, allowed_hosts: card.allowed_hosts, limit: card.limit, pending,
+      });
+      if (pending) await notifyCardRequest(env, card);
       return json(card);
     }
 
-    // ── list cards (the statement — never the underlying key) ──
+    // ── list cards (the statement's subjects — never the underlying key) ──
     if (path === "/cards" && request.method === "GET") {
       const list = await env.VAULT.list({ prefix: "card:" });
       const cards = [];
       for (const k of list.keys) {
         const c = JSON.parse(await env.VAULT.get(k.name));
         cards.push({
-          id: c.id, name: c.name, secret: c.secret, allowed_hosts: c.allowed_hosts,
+          id: c.id, name: c.name, secret: c.secret, holder: c.holder ?? null, allowed_hosts: c.allowed_hosts,
           limit: c.limit, used: c.used, remaining: c.limit != null ? Math.max(0, c.limit - c.used) : null,
-          expires_at: c.expires_at, frozen: c.frozen,
+          expires_at: c.expires_at, frozen: c.frozen, pending: c.pending || false,
         });
       }
       return json({ cards });
+    }
+
+    // ── the statement: read the append-only audit ledger (newest first) ──
+    if (path === "/events" && request.method === "GET") {
+      const limit = Math.min(parseInt(url.searchParams.get("limit") || "100", 10) || 100, 1000);
+      const list = await env.VAULT.list({ prefix: "event:" });
+      const keys = list.keys.map((k) => k.name).sort().reverse().slice(0, limit);
+      const events = [];
+      for (const name of keys) {
+        const raw = await env.VAULT.get(name);
+        if (raw) events.push(JSON.parse(raw));
+      }
+      return json({ events });
     }
 
     // ── /cards/:id  (use · freeze · revoke) ──
@@ -111,27 +182,40 @@ export default {
       const card = JSON.parse(raw);
 
       if (sub === "/freeze" && request.method === "POST") {
-        card.frozen = !!body.frozen;
+        const frozen = !!body.frozen;
+        // Freezing (kill switch) is a de-escalation any holder may do. UNFREEZING re-authorizes
+        // a card — owner only — and unfreezing a PENDING card is how the owner approves it.
+        if (!frozen && !human) return json({ error: HUMAN_REQUIRED }, 403);
+        const approved = !frozen && !!card.pending;
+        card.frozen = frozen;
+        if (!frozen) card.pending = false;
         await env.VAULT.put("card:" + id, JSON.stringify(card));
-        return json({ id, frozen: card.frozen });
+        await logEvent(env, frozen ? "card.freeze" : approved ? "card.approve" : "card.unfreeze", { id });
+        return json({ id, frozen: card.frozen, pending: card.pending || false });
       }
       if (!sub && request.method === "DELETE") {
         await env.VAULT.delete("card:" + id);
+        await logEvent(env, "card.revoke", { id });
         return json({ revoked: id });
       }
       if (sub === "/use" && request.method === "POST") {
-        // authorize (ISO-8583 in spirit)
-        if (card.frozen) return json({ authorized: false, decline: "card frozen" });
-        if (card.expires_at && Date.parse(card.expires_at) < Date.now()) return json({ authorized: false, decline: "card expired" });
-        if (card.limit != null && card.used >= card.limit) return json({ authorized: false, decline: "limit reached" });
-        if (!body.url) return json({ authorized: false, decline: "request url required" });
+        // authorize (ISO-8583 in spirit) — a decline is still a line on the statement
+        const decline = async (reason) => {
+          await logEvent(env, "card.decline", { id, reason });
+          return json({ authorized: false, decline_reason: reason });
+        };
+        if (card.pending) return decline("card pending owner approval (approve it in the wallet)");
+        if (card.frozen) return decline("card frozen");
+        if (card.expires_at && Date.parse(card.expires_at) < Date.now()) return decline("card expired");
+        if (card.limit != null && card.used >= card.limit) return decline("limit reached");
+        if (!body.url) return decline("request url required");
         let host;
-        try { host = new URL(body.url).host; } catch { return json({ authorized: false, decline: "bad url" }); }
-        if (!card.allowed_hosts.includes(host)) return json({ authorized: false, decline: `host ${host} not allowed for this card` });
+        try { host = new URL(body.url).host; } catch { return decline("bad url"); }
+        if (!card.allowed_hosts.includes(host)) return decline(`host ${host} not allowed for this card`);
 
         // settle: the vault injects the real key server-side and returns ONLY the response
         const secRaw = await env.VAULT.get("secret:" + card.secret);
-        if (!secRaw) return json({ authorized: false, decline: "secret missing from vault" });
+        if (!secRaw) return decline("secret missing from vault");
         const key = await decrypt(env, JSON.parse(secRaw));
         const resp = await fetch(body.url, {
           method: body.method || "GET",
@@ -143,6 +227,7 @@ export default {
         try { out = JSON.parse(text); } catch { out = text; }
         card.used++;
         await env.VAULT.put("card:" + id, JSON.stringify(card));
+        await logEvent(env, "card.charge", { id, host, status: resp.status });
         return json({
           authorized: true,
           status: resp.status,

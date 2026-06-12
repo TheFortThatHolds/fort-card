@@ -36,8 +36,9 @@ The [`worker/`](worker) folder is a complete, single-file Cloudflare Worker — 
 ```bash
 cd worker
 npx wrangler kv namespace create VAULT      # paste the id into wrangler.toml
-npx wrangler secret put FORT_KEY             # an admin bearer token you choose
+npx wrangler secret put FORT_KEY             # owner bearer token you choose
 npx wrangler secret put MASTER_KEY           # openssl rand -base64 32
+npx wrangler secret put FORT_AGENT_KEY       # optional — the token you hand to agents
 npx wrangler deploy
 ```
 
@@ -81,19 +82,30 @@ The destination service (GitHub, OpenAI, …) still receives the real key — it
 1. **Vault** — the real key goes in encrypted (AES-GCM) and never comes back out.
 2. **Card** — a named pointer at the secret: locked to specific hosts, capped, freezable. This is all the agent gets.
 3. **Charge** — the agent presents `card + request`; the vault checks the rules (frozen? expired? over limit? host allowed?), injects the real key server-side, makes the call, and returns only the response.
+4. **Statement** — every act (issue, charge, decline, freeze, approve, revoke) is appended to an audit ledger you can read at `GET /events`. The ledger never holds a key or a secret value.
+
+## Human-in-the-loop
+
+A per-card limit means nothing if the holder can mint a fresh card or refill its own allowance — so **issuing** and **re-authorizing (unfreezing)** a card are *owner* acts. The worker tells human from agent by **which token** is presented:
+
+- **`FORT_KEY`** (owner) — issues **active** cards, approves/unfreezes, stores secrets.
+- **`FORT_AGENT_KEY`** (optional, the token you hand to agents) — may **request**/use/freeze/revoke. A card an agent issues is **pending**: inert until you approve it (by unfreezing it as the owner), and a `NOTIFY_WEBHOOK` POST is fired so you know to. An agent can ask for a card — it can never mint or refill its own live allowance.
+
+If you don't set `FORT_AGENT_KEY`, only the owner token works and every card is active (the simple single-token mode). *(The hosted [Fort Memory Core](https://thefortthatholds.com) takes this further — it tells human from agent by login method and fans approvals out to email + web-push.)*
 
 ## API
 
-| Method | Path | Body | Does |
-|---|---|---|---|
-| `POST` | `/secrets` | `{name, value}` | store a secret (encrypted) |
-| `POST` | `/cards` | `{name, secret, allowed_hosts, limit?, expires_at?, header?, header_prefix?}` | issue a card |
-| `GET` | `/cards` | — | list cards (never the key) |
-| `POST` | `/cards/:id/use` | `{url, method?, headers?, body?}` | authorize + charge |
-| `POST` | `/cards/:id/freeze` | `{frozen}` | freeze / unfreeze |
-| `DELETE` | `/cards/:id` | — | revoke |
+| Method | Path | Body | Does | Who |
+|---|---|---|---|---|
+| `POST` | `/secrets` | `{name, value}` | store a secret (encrypted) | owner |
+| `POST` | `/cards` | `{name, secret, allowed_hosts, holder?, limit?, expires_at?, header?, header_prefix?}` | owner → issue · agent → request (pending) | owner / agent |
+| `GET` | `/cards` | — | list cards (never the key) | owner / agent |
+| `GET` | `/events` | `?limit=N` | read the statement (audit ledger) | owner / agent |
+| `POST` | `/cards/:id/use` | `{url, method?, headers?, body?}` | authorize + charge | owner / agent |
+| `POST` | `/cards/:id/freeze` | `{frozen}` | freeze (any) / unfreeze = approve (owner) | owner / agent |
+| `DELETE` | `/cards/:id` | — | revoke | owner / agent |
 
-All routes require `Authorization: Bearer <FORT_KEY>`.
+All routes require `Authorization: Bearer <FORT_KEY or FORT_AGENT_KEY>`.
 
 ---
 
