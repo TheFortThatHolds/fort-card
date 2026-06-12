@@ -70,6 +70,7 @@ const PAGE = `<!doctype html>
     <div class="btns">
       <a class="btn p" onclick="runDemo()">▶ Watch the 20-second demo</a>
       <a class="btn g" href="#run">Run it yourself</a>
+      <a class="btn g" href="https://github.com/TheFortThatHolds/fort-card" target="_blank" rel="noopener">★ Open source — fork it</a>
     </div>
   </header>
 
@@ -126,6 +127,7 @@ node card-demo.mjs YOUR_TOKEN api.github.com https://api.github.com/user token</
   </section>
 
   <footer>
+    Open source (MIT) · <a href="https://github.com/TheFortThatHolds/fort-card" target="_blank" rel="noopener">github.com/TheFortThatHolds/fort-card</a> — read the vault, run your own.<br>
     Built on the Fort Memory Core — a sovereign, MCP-native memory + credential layer.<br>
     © The Fort That Holds · issue cards, don’t hand out keys.
   </footer>

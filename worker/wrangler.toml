@@ -8,9 +8,16 @@ kv_namespaces = [
   { binding = "VAULT", id = "PASTE_YOUR_KV_NAMESPACE_ID_HERE" }
 ]
 
-# 2. Set the two secrets (NEVER commit these):
-#      npx wrangler secret put FORT_KEY      # an admin bearer token you choose
-#      npx wrangler secret put MASTER_KEY    # base64 of 32 random bytes:  openssl rand -base64 32
+# 2. Set the secrets (NEVER commit these):
+#      npx wrangler secret put FORT_KEY        # owner bearer token you choose
+#      npx wrangler secret put MASTER_KEY      # base64 of 32 random bytes:  openssl rand -base64 32
 #
-# 3. Deploy:
+#    Optional — turn on human-in-the-loop so an agent's cards land PENDING until you approve:
+#      npx wrangler secret put FORT_AGENT_KEY  # the token you hand to agents
+#
+# 3. (optional) Get notified when an agent requests a card — set a webhook URL:
+#      [vars]
+#      NOTIFY_WEBHOOK = "https://your-endpoint.example.com/fort-card"
+#
+# 4. Deploy:
 #      npx wrangler deploy
