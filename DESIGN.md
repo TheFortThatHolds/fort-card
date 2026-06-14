@@ -16,8 +16,16 @@ is the agreed shape; code follows it.
   still works. The Core just loses a remote.
 
 Two modes:
-- **Standalone** — deploy the wallet, use its API / its own PWA. No Core.
-- **Plugged-in** — FML loads the control plugin and drives the wallet remotely.
+- **Standalone** — deploy the wallet, use its API / its own PWA. No Core. Approvals (and all
+  controls) happen in the **wallet's own PWA**.
+- **Plugged-in** — FML loads the control plugin and drives the wallet remotely. The concrete
+  difference for you: **the approval surfaces inside FML instead of the wallet app**, so you
+  approve where you already are without switching apps.
+
+**The plugin is glass, not authority.** Even when you approve *in FML*, FML only *shows* the
+pending card and *triggers* the passkey tap — the **wallet still verifies your passkey and
+flips the card live**. FML never becomes a second approver that can say yes on its own, and it
+never holds a key. Same cryptographic gate, different screen.
 
 ---
 
