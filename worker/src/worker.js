@@ -21,6 +21,7 @@
 //
 // HTTP API (all routes require  Authorization: Bearer <FORT_KEY | FORT_AGENT_KEY>):
 //   POST   /secrets            {name, value}                       store a secret (owner only)
+//   POST   /rotate                                                 rotate the vault key (owner only)
 //   POST   /cards              {name, secret, allowed_hosts, ...}  issue (owner) / request (agent)
 //   GET    /cards                                                  list cards (never the key)
 //   GET    /events             ?limit=N                            the statement (audit ledger)
@@ -48,17 +49,79 @@ const HUMAN_REQUIRED =
   "Present the owner token (FORT_KEY) to do it — an agent token cannot issue an active " +
   "card, store a secret, or refill its own allowance. (Agents may use, freeze, and revoke.)";
 
-async function masterKey(env) {
+// ── envelope encryption: MASTER_KEY is the KEK (the sovereign root — never rotated in-app);
+// under it sits a rotatable DATA key (DEK) in KV, wrapped by the KEK. The wallet can mint a
+// fresh DEK and re-seal every secret (POST /rotate, owner only) — but the KEK never changes,
+// so a rotation can NEVER lock the owner out, and a leaked agent token can never re-key. A
+// secret sealed before the first rotation carries no keyRef and still opens under the KEK. ──
+async function kek(env) {
   return crypto.subtle.importKey("raw", b64d(env.MASTER_KEY), { name: "AES-GCM" }, false, ["encrypt", "decrypt"]);
 }
-async function encrypt(env, plaintext) {
+const dekCache = new Map(); // per-isolate, keyed by ref; rotation mints a new ref, so never stale
+async function importRaw(raw) {
+  return crypto.subtle.importKey("raw", raw, { name: "AES-GCM" }, false, ["encrypt", "decrypt"]);
+}
+async function loadDEK(env, ref) {
+  if (dekCache.has(ref)) return dekCache.get(ref);
+  const raw = await env.VAULT.get("dek:" + ref);
+  if (!raw) throw new Error("vault data key '" + ref + "' missing");
+  const w = JSON.parse(raw);
+  const dekRaw = await crypto.subtle.decrypt({ name: "AES-GCM", iv: b64d(w.iv) }, await kek(env), b64d(w.ct));
+  const key = await importRaw(new Uint8Array(dekRaw));
+  dekCache.set(ref, key);
+  return key;
+}
+// key to SEAL new writes with: the active DEK once rotated, else the KEK (pre-rotation = the
+// original behaviour, byte-for-byte). key to OPEN a secret: its keyRef's DEK, else the KEK.
+async function writeKey(env) {
+  const ref = await env.VAULT.get("dek:active");
+  return ref ? { key: await loadDEK(env, ref), ref } : { key: await kek(env), ref: null };
+}
+async function readKey(env, keyRef) {
+  return keyRef ? loadDEK(env, keyRef) : kek(env);
+}
+async function sealWith(key, plaintext) {
   const iv = crypto.getRandomValues(new Uint8Array(12));
-  const ct = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, await masterKey(env), enc.encode(plaintext));
+  const ct = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, enc.encode(plaintext));
   return { iv: b64e(iv.buffer), ct: b64e(ct) };
 }
+async function encrypt(env, plaintext) {
+  const { key, ref } = await writeKey(env);
+  const s = await sealWith(key, plaintext);
+  if (ref) s.keyRef = ref;
+  return s;
+}
 async function decrypt(env, s) {
-  const pt = await crypto.subtle.decrypt({ name: "AES-GCM", iv: b64d(s.iv) }, await masterKey(env), b64d(s.ct));
+  const pt = await crypto.subtle.decrypt({ name: "AES-GCM", iv: b64d(s.iv) }, await readKey(env, s.keyRef), b64d(s.ct));
   return dec.decode(pt);
+}
+// Mint a fresh DEK, wrap it under the KEK, make it active, and re-seal every stored secret to
+// it. The KEK is untouched. Authorization (owner-only) is the caller's job — the route gates it.
+async function rotateDataKey(env) {
+  const rawDek = crypto.getRandomValues(new Uint8Array(32));
+  const ref = "dek_" + crypto.randomUUID().slice(0, 8);
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const wrapped = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, await kek(env), rawDek);
+  await env.VAULT.put("dek:" + ref, JSON.stringify({ ref, iv: b64e(iv.buffer), ct: b64e(wrapped), created: new Date().toISOString() }));
+  const newKey = await importRaw(rawDek);
+  dekCache.set(ref, newKey);
+  await env.VAULT.put("dek:active", ref); // active before re-seal, so concurrent writes land here too
+  let rotated = 0;
+  let cursor;
+  do {
+    const page = await env.VAULT.list({ prefix: "secret:", cursor });
+    for (const k of page.keys) {
+      const raw = await env.VAULT.get(k.name);
+      if (!raw) continue;
+      const plain = await decrypt(env, JSON.parse(raw)); // opens under its OLD keyRef / the KEK
+      const sealed = await sealWith(newKey, plain);
+      sealed.keyRef = ref;
+      await env.VAULT.put(k.name, JSON.stringify(sealed));
+      rotated++;
+    }
+    cursor = page.list_complete ? undefined : page.cursor;
+  } while (cursor);
+  return { ref, rotated };
 }
 
 // ── the statement: an append-only ledger of every act (never a key, never a secret value) ──
@@ -112,6 +175,16 @@ export default {
       await env.VAULT.put("secret:" + body.name, JSON.stringify(await encrypt(env, String(body.value))));
       await logEvent(env, "secret.store", { name: body.name }); // name only — never the value
       return json({ ok: true, name: body.name });
+    }
+
+    // ── rotate the vault data key (owner only): mint a new DEK + re-seal every secret. The
+    // MASTER_KEY (sovereign root) is untouched, so this can never lock the owner out, and an
+    // agent token can never trigger it. The owner generates; only the owner commits. ──
+    if (path === "/rotate" && request.method === "POST") {
+      if (!human) return json({ error: HUMAN_REQUIRED }, 403);
+      const res = await rotateDataKey(env);
+      await logEvent(env, "vault.rotate", { ref: res.ref, rotated: res.rotated });
+      return json({ ok: true, ...res });
     }
 
     // ── issue a card (owner → active; agent → pending, inert until the owner approves) ──

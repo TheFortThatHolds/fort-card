@@ -84,6 +84,16 @@ The destination service (GitHub, OpenAI, …) still receives the real key — it
 3. **Charge** — the agent presents `card + request`; the vault checks the rules (frozen? expired? over limit? host allowed?), injects the real key server-side, makes the call, and returns only the response.
 4. **Statement** — every act (issue, charge, decline, freeze, approve, revoke) is appended to an audit ledger you can read at `GET /events`. The ledger never holds a key or a secret value.
 
+## Key authority — generate freely, authorize as the owner
+
+Your `MASTER_KEY` is the **KEK** (key-encryption-key) — the sovereign root. It stays in your hands and **never rotates in-app**. Under it sits a rotatable **data key (DEK)**, stored in the vault wrapped by the KEK. The wallet can mint a new DEK and re-seal every secret with `POST /rotate` — but:
+
+- only the **owner token** can trigger it (an agent token can't re-key);
+- the KEK never changes, so a rotation **can never lock you out**;
+- it's **backward-compatible** — secrets sealed before your first rotation still open directly under the KEK, so nothing breaks and rotation is opt-in.
+
+So the wallet *generates* the new key, but *you* commit it. A leaked agent token can use cards within their caps — it can never re-key your vault.
+
 ## Human-in-the-loop
 
 A per-card limit means nothing if the holder can mint a fresh card or refill its own allowance — so **issuing** and **re-authorizing (unfreezing)** a card are *owner* acts. The worker tells human from agent by **which token** is presented:
@@ -98,6 +108,7 @@ If you don't set `FORT_AGENT_KEY`, only the owner token works and every card is 
 | Method | Path | Body | Does | Who |
 |---|---|---|---|---|
 | `POST` | `/secrets` | `{name, value}` | store a secret (encrypted) | owner |
+| `POST` | `/rotate` | — | rotate the vault data key + re-seal every secret | owner |
 | `POST` | `/cards` | `{name, secret, allowed_hosts, holder?, limit?, expires_at?, header?, header_prefix?}` | owner → issue · agent → request (pending) | owner / agent |
 | `GET` | `/cards` | — | list cards (never the key) | owner / agent |
 | `GET` | `/events` | `?limit=N` | read the statement (audit ledger) | owner / agent |
