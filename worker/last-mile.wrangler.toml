@@ -1,0 +1,19 @@
+name = "fort-card-last-mile"
+main = "src/last-mile.js"
+compatibility_date = "2026-06-01"
+
+# The last-mile worker is STATELESS — no KV, no storage. It only decrypts and injects.
+# Deploy it to YOUR OWN Cloudflare account so the plaintext key never leaves your infrastructure.
+#
+# 1. Set the secrets (NEVER commit these):
+#      npx wrangler secret put MASTER_KEY     --config last-mile.wrangler.toml   # base64 of 32 random bytes: openssl rand -base64 32
+#      npx wrangler secret put LAST_MILE_KEY  --config last-mile.wrangler.toml   # a long random bearer the control plane will present
+#
+# 2. Deploy:
+#      npx wrangler deploy --config last-mile.wrangler.toml
+#
+# 3. Hand the deployed URL + LAST_MILE_KEY to the control plane (the managed/self-host worker):
+#      npx wrangler secret put LAST_MILE_URL  # https://fort-card-last-mile.<you>.workers.dev
+#      npx wrangler secret put LAST_MILE_KEY  # the same bearer
+#    With those two set, the control plane stops decrypting locally and relays ciphertext here.
+#    Its MASTER_KEY can then be REMOVED — it no longer needs (and should not hold) the root key.

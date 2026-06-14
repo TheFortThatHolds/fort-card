@@ -146,6 +146,37 @@ async function logEvent(env, space, type, data) {
   await env.VAULT.put(K(space, "event", ts, crypto.randomUUID().slice(0, 8)), JSON.stringify({ ts, type, ...data }));
 }
 
+// ── SPLIT DEPLOY: the last mile (decrypt + inject + fetch) can be delegated to a separate
+// worker on the OWNER's own Cloudflare. When LAST_MILE_URL + LAST_MILE_KEY are set, THIS worker
+// (the control plane) holds only ciphertext and never touches MASTER_KEY — it relays sealed
+// material to the last-mile worker, which opens it on the owner's infra. Unset = single-worker
+// self-host (decrypt inline, the original behaviour). See src/last-mile.js. ──
+function splitMode(env) {
+  return !!(env.LAST_MILE_URL && env.LAST_MILE_KEY);
+}
+async function callLastMile(env, path, payload) {
+  const resp = await fetch(env.LAST_MILE_URL.replace(/\/+$/, "") + path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: "Bearer " + env.LAST_MILE_KEY },
+    body: JSON.stringify(payload),
+  });
+  if (!resp.ok) throw new Error("last-mile " + path + " failed: " + resp.status);
+  return resp.json();
+}
+// the space's active KEK-wrapped DEK ({iv, ct}) to hand the last-mile worker, or null pre-rotation.
+async function activeWrappedDEK(env, space) {
+  const ref = await env.VAULT.get(K(space, "dek", "active"));
+  if (!ref) return null;
+  const raw = await env.VAULT.get(K(space, "dek", ref));
+  return raw ? JSON.parse(raw) : null;
+}
+// the KEK-wrapped DEK for a secret's specific keyRef (what opens THAT secret), or null.
+async function wrappedDEKFor(env, space, keyRef) {
+  if (!keyRef) return null;
+  const raw = await env.VAULT.get(K(space, "dek", keyRef));
+  return raw ? JSON.parse(raw) : null;
+}
+
 // best-effort owner notification when an agent requests a card; never blocks issuance.
 async function notifyCardRequest(env, card) {
   if (!env.NOTIFY_WEBHOOK) return;
@@ -167,8 +198,10 @@ async function notifyCardRequest(env, card) {
 
 export default {
   async fetch(request, env) {
-    if (!env.MASTER_KEY || !env.FORT_KEY) {
-      return json({ error: "server not configured — set FORT_KEY and MASTER_KEY secrets" }, 500);
+    // FORT_KEY is always required. MASTER_KEY is required UNLESS the last mile is delegated —
+    // in split mode the control plane holds no root key and never decrypts (that's the point).
+    if (!env.FORT_KEY || (!env.MASTER_KEY && !splitMode(env))) {
+      return json({ error: "server not configured — set FORT_KEY, and MASTER_KEY (or LAST_MILE_URL + LAST_MILE_KEY for a split deploy)" }, 500);
     }
     const url = new URL(request.url);
     const path = url.pathname.replace(/\/+$/, "") || "/";
@@ -189,7 +222,17 @@ export default {
     if (path === "/secrets" && request.method === "POST") {
       if (!human) return json({ error: HUMAN_REQUIRED }, 403);
       if (!body.name || !body.value) return json({ error: "name and value required" }, 400);
-      await env.VAULT.put(K(space, "secret", body.name), JSON.stringify(await encrypt(env, space, String(body.value))));
+      let sealed;
+      if (splitMode(env)) {
+        // seal on the owner's last-mile worker; the control plane only stores the ciphertext.
+        const ref = await env.VAULT.get(K(space, "dek", "active"));
+        const { sealed: s } = await callLastMile(env, "/seal", { plaintext: String(body.value), dek: await activeWrappedDEK(env, space) });
+        if (ref) s.keyRef = ref; // tag it with the DEK that opens it (the last-mile sealed under that DEK)
+        sealed = s;
+      } else {
+        sealed = await encrypt(env, space, String(body.value));
+      }
+      await env.VAULT.put(K(space, "secret", body.name), JSON.stringify(sealed));
       await logEvent(env, space, "secret.store", { name: body.name }); // name only — never the value
       return json({ ok: true, name: body.name });
     }
@@ -199,7 +242,29 @@ export default {
     // agent token can never trigger it. The owner generates; only the owner commits. ──
     if (path === "/rotate" && request.method === "POST") {
       if (!human) return json({ error: HUMAN_REQUIRED }, 403);
-      const res = await rotateDataKey(env, space);
+      let res;
+      if (splitMode(env)) {
+        // gather every sealed secret + the current active wrapped DEK, hand them to the last-mile
+        // worker to re-seal under a fresh DEK, then persist what comes back. Plaintext stays there.
+        const secrets = [];
+        let cursor;
+        const prefix = K(space, "secret", "");
+        do {
+          const page = await env.VAULT.list({ prefix, cursor });
+          for (const k of page.keys) {
+            const raw = await env.VAULT.get(k.name);
+            if (raw) secrets.push({ name: k.name.slice(prefix.length), sealed: JSON.parse(raw) });
+          }
+          cursor = page.list_complete ? undefined : page.cursor;
+        } while (cursor);
+        const out = await callLastMile(env, "/rotate", { secrets, dek: await activeWrappedDEK(env, space) });
+        await env.VAULT.put(K(space, "dek", out.dek.ref), JSON.stringify({ ...out.dek, created: new Date().toISOString() }));
+        await env.VAULT.put(K(space, "dek", "active"), out.dek.ref);
+        for (const s of out.secrets) await env.VAULT.put(K(space, "secret", s.name), JSON.stringify(s.sealed));
+        res = { ref: out.dek.ref, rotated: out.secrets.length };
+      } else {
+        res = await rotateDataKey(env, space);
+      }
       await logEvent(env, space, "vault.rotate", { ref: res.ref, rotated: res.rotated });
       return json({ ok: true, ...res });
     }
@@ -303,18 +368,34 @@ export default {
         try { host = new URL(body.url).host; } catch { return decline("bad url"); }
         if (!card.allowed_hosts.includes(host)) return decline(`host ${host} not allowed for this card`);
 
-        // settle: the vault injects the real key server-side and returns ONLY the response
+        // settle: the real key is injected server-side and ONLY the response comes back. In split
+        // mode the control plane never opens the secret — it relays the ciphertext to the owner's
+        // last-mile worker, which decrypts + injects + fetches on the owner's own infra.
         const secRaw = await env.VAULT.get(K(space, "secret", card.secret));
         if (!secRaw) return decline("secret missing from vault");
-        const key = await decrypt(env, space, JSON.parse(secRaw));
-        const resp = await fetch(body.url, {
-          method: body.method || "GET",
-          headers: { [card.header]: card.header_prefix + key, ...(body.headers || {}) },
-          body: body.body == null ? undefined : typeof body.body === "string" ? body.body : JSON.stringify(body.body),
-        });
-        const text = await resp.text();
-        let out;
-        try { out = JSON.parse(text); } catch { out = text; }
+        const sealed = JSON.parse(secRaw);
+        let resp, out;
+        if (splitMode(env)) {
+          const r = await callLastMile(env, "/charge", {
+            secret: sealed,
+            dek: await wrappedDEKFor(env, space, sealed.keyRef),
+            header: card.header,
+            header_prefix: card.header_prefix,
+            request: { url: body.url, method: body.method || "GET", headers: body.headers || {}, body: body.body },
+          });
+          resp = { status: r.status };
+          out = r.body;
+        } else {
+          const key = await decrypt(env, space, sealed);
+          const httpResp = await fetch(body.url, {
+            method: body.method || "GET",
+            headers: { ...(body.headers || {}), [card.header]: card.header_prefix + key }, // credential injected LAST
+            body: body.body == null ? undefined : typeof body.body === "string" ? body.body : JSON.stringify(body.body),
+          });
+          const text = await httpResp.text();
+          try { out = JSON.parse(text); } catch { out = text; }
+          resp = { status: httpResp.status };
+        }
         card.used++;
         await env.VAULT.put(K(space, "card", id), JSON.stringify(card));
         await logEvent(env, space, "card.charge", { id, host, status: resp.status });
