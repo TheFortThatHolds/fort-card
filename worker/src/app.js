@@ -289,14 +289,20 @@ async function enablePush(){
     st('✓ subscribed ('+(r.id||'ok')+')','#7fae6d');await refreshPushState()
   }catch(e){st('FAIL: '+(e.name||'')+' — '+(e.message||e),'#e7857a')}
 }
-// (debug) keep the control visible + tappable; self-heal the server copy if the browser has one
+// Quiet once subscribed: show the control only when there's no subscription; if there is one,
+// make sure the server has it (self-heal) and hide. Shows again if the subscription ever drops.
 async function refreshPushState(){
   try{
-    const card=$('#pushcard');if(card)card.classList.remove('hide');
-    const btn=$('#pushbtn');if(btn){btn.textContent='Turn on notifications';btn.disabled=false}
+    const card=$('#pushcard');const bar=$('#notifbar');
+    const supported=('Notification'in window)&&('serviceWorker'in navigator)&&('PushManager'in window);
+    if(!supported||Notification.permission==='denied'){if(card)card.classList.add('hide');if(bar)bar.classList.add('hide');return}
     const reg=await navigator.serviceWorker.getRegistration('/app').catch(()=>null)||await navigator.serviceWorker.getRegistration().catch(()=>null);
     const sub=reg?await reg.pushManager.getSubscription():null;
-    if(sub){try{await jget('/push/subscribe',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({subscription:sub.toJSON()})})}catch(_){}}
+    if(sub){
+      try{await jget('/push/subscribe',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({subscription:sub.toJSON()})})}catch(_){}
+      if(card)card.classList.add('hide');if(bar)bar.classList.add('hide');return;
+    }
+    if(card){card.classList.remove('hide');const btn=$('#pushbtn');if(btn){btn.textContent=Notification.permission==='granted'?'Turn on notifications':'Enable';btn.disabled=false}}
   }catch(_){}
 }
 $('#enroll').onclick=enroll;
