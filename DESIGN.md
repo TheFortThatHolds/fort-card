@@ -120,6 +120,34 @@ never holds a key. Same cryptographic gate, different screen.
 - Each user either **runs their own deploy** (their keys, their Cloudflare — full sovereignty)
   or is a **tenant on a hosted instance** (the custodial trade, eyes open).
 
+## 10. Split deploy — the last mile on your own infra (the managed-without-custody answer)
+
+The custody truth in §5/§9 says "hosted = you trust the operator, because the operator's worker
+holds the KEK and decrypts your autonomous secrets." A **split deploy** removes that trust from
+the *managed* path by separating the **last mile** (decrypt + inject + fetch) into its own worker
+that runs on **your** Cloudflare and holds **your** `MASTER_KEY`.
+
+- **Control plane** (`src/worker.js` with `LAST_MILE_URL` + `LAST_MILE_KEY` set) — the managed
+  service. Holds **only ciphertext**: sealed secrets, KEK-wrapped DEKs, cards, the statement. It
+  has **no `MASTER_KEY`**, so it **cannot decrypt anything**. On a charge it relays the sealed
+  secret to the last-mile worker and returns the response. It runs the wallet, approvals, audit —
+  the whole UI/orchestration — while being **plaintext-blind**.
+- **Last-mile worker** (`src/last-mile.js`) — thin, **stateless**, on *your* account. Holds
+  `MASTER_KEY`. One job: open a sealed secret, inject it into one outbound call (credential header
+  **last**, **SSRF-blocked**), return the response. No cards, no storage, no UI. The plaintext key
+  exists only here, only for the duration of one fetch, only on your infrastructure.
+- **The envelope is identical** on both sides (AES-256-GCM, per-space DEK wrapped under the KEK),
+  so seal/charge/rotate are cross-compatible. The control plane delegates `/secrets` (seal),
+  `/use` (charge), and `/rotate` (re-seal) to the last mile; **drop its `MASTER_KEY` entirely**
+  once `LAST_MILE_URL`/`LAST_MILE_KEY` are set.
+- **Unset = single-worker self-host**, decrypt inline — the original behaviour, unchanged. The
+  split is purely additive; nothing existing regresses.
+
+This is the offering: **fork-and-self-host** (one worker, you operate it) OR **managed control
+plane + your own last-mile worker** (we run the wallet, your keys never leave your Cloudflare).
+Cryptographic, not pinky-promise: no `MASTER_KEY` on the operator's box → no plaintext on the
+operator's box.
+
 ---
 
 ## Build order
@@ -133,3 +161,4 @@ never holds a key. Same cryptographic gate, different screen.
 7. SSRF + header-injection hardening on `/use`; soft-cap note
 8. Approval + wake to the user's own repo (never the public one)
 9. The FML control plugin (drives the wallet API; holds no keys)
+10. ~~Split deploy — last-mile worker (decrypt+inject on the owner's infra); control plane plaintext-blind~~ ✅
