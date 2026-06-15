@@ -405,11 +405,18 @@ export default {
       if (!b.secret || !Array.isArray(b.allowed_hosts) || !b.allowed_hosts.length) {
         return json({ error: "secret and a non-empty allowed_hosts array are required" }, 400);
       }
-      // A request MUST declare how many charges it needs — no open-ended cards via the agent path.
-      // The owner approves that exact cap; each charge is logged. Spent at the cap, then declined.
-      const charges = Number(b.charges != null ? b.charges : b.limit);
-      if (!Number.isInteger(charges) || charges < 1) {
-        return json({ error: "charges required: a positive integer (how many times you'll use this card). Open-ended cards can't be requested." }, 400);
+      // A request declares its cap, OR asks for unlimited (e.g. an email sender scoped to one host).
+      // Either way it lands PENDING and inert until the owner approves it — the human sees the cap (or
+      // "unlimited") and the single allowed host on approval, and the host scope is the real control.
+      let limit;
+      if (b.unlimited === true || b.charges === "unlimited" || b.limit === null) {
+        limit = null; // open-ended — the owner approves this knowingly; the allowed_hosts scope bounds it
+      } else {
+        const charges = Number(b.charges != null ? b.charges : b.limit);
+        if (!Number.isInteger(charges) || charges < 1) {
+          return json({ error: "charges required: a positive integer, OR pass unlimited:true for an open-ended card (e.g. an email sender). Either way it lands pending for the owner to approve." }, 400);
+        }
+        limit = charges;
       }
       const rid = "card_" + crypto.randomUUID().slice(0, 8);
       // one-time charge token, returned ONCE to this requester. Only the holder can charge the card
@@ -423,7 +430,7 @@ export default {
         allowed_hosts: b.allowed_hosts.map(String),
         header: "Authorization",
         header_prefix: "Bearer ",
-        limit: charges,
+        limit,
         used: 0,
         expires_at: null,
         frozen: true,
@@ -433,9 +440,10 @@ export default {
         created: new Date().toISOString(),
       };
       await env.VAULT.put(K(aspace, "card", rid), JSON.stringify(reqCard));
-      await logEvent(env, aspace, "card.request", { id: rid, name: reqCard.name, secret: reqCard.secret, allowed_hosts: reqCard.allowed_hosts, limit: charges, repo: b.repo });
+      await logEvent(env, aspace, "card.request", { id: rid, name: reqCard.name, secret: reqCard.secret, allowed_hosts: reqCard.allowed_hosts, limit, repo: b.repo });
       await notifyCardRequest(env, aspace, reqCard);
-      return json({ ok: true, pending: true, card: rid, charge_token: chargeToken, note: "Pending the owner's approval (capped at " + charges + " charge" + (charges > 1 ? "s" : "") + "). Keep charge_token — only its holder can charge this card via /agent/use {token}." });
+      const cap = limit == null ? "unlimited charges" : "capped at " + limit + " charge" + (limit > 1 ? "s" : "");
+      return json({ ok: true, pending: true, card: rid, charge_token: chargeToken, note: "Pending the owner's approval (" + cap + ", scoped to " + reqCard.allowed_hosts.join(", ") + "). Keep charge_token — only its holder can charge this card via /agent/use {token}." });
     }
 
     // WHO is calling, and WHICH space do they operate in?
