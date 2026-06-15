@@ -269,30 +269,26 @@ async function enablePush(){
   try{
     if(!('serviceWorker'in navigator)||!('PushManager'in window)){toast('Push not supported here');return}
     if((await Notification.requestPermission())!=='granted'){toast('Notifications not allowed');return}
-    const reg=await navigator.serviceWorker.ready;
+    const reg=await navigator.serviceWorker.register('/app/sw.js');
+    await navigator.serviceWorker.ready;
     const {key}=await jget('/push/key');
-    const sub=await reg.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:urlB64(key)});
+    const sub=(await reg.pushManager.getSubscription())||await reg.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:urlB64(key)});
     await jget('/push/subscribe',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({subscription:sub.toJSON()})});
-    toast('Notifications on');await refreshPushState()
-  }catch(e){toast('Could not enable: '+(e.message||e.name))}
+    toast('Notifications on ✓');await refreshPushState()
+  }catch(e){toast('Notif error: '+(e.name||'')+' '+(e.message||''))}
 }
 // reflect the true notification state (granted + subscribed) so the button doesn't lie or persist
 async function refreshPushState(){
   try{
-    const card=$('#pushcard');
+    const card=$('#pushcard');const bar=$('#notifbar');
     const supported=('Notification'in window)&&('serviceWorker'in navigator)&&('PushManager'in window);
-    // Only ever show the prompt when the user HASN'T decided yet. Granted or denied → hide for good.
-    if(!supported||Notification.permission!=='default'){
-      if(card)card.classList.add('hide');$('#notifbar').classList.add('hide');
-      // granted but the server lost our subscription → re-register quietly, no UI
-      if(supported&&Notification.permission==='granted'){
-        const reg=await navigator.serviceWorker.ready.catch(()=>null);
-        const sub=reg?await reg.pushManager.getSubscription():null;
-        if(reg&&!sub){try{const {key}=await jget('/push/key');const s=await reg.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:urlB64(key)});await jget('/push/subscribe',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({subscription:s.toJSON()})})}catch(_){}}
-      }
-      return;
-    }
-    if(card)card.classList.remove('hide');
+    if(!supported||Notification.permission==='denied'){if(card)card.classList.add('hide');if(bar)bar.classList.add('hide');return}
+    const reg=await navigator.serviceWorker.ready.catch(()=>null);
+    const sub=reg?await reg.pushManager.getSubscription():null;
+    if(sub){if(card)card.classList.add('hide');if(bar)bar.classList.add('hide');return} // truly on → hide
+    // NOT actually subscribed (even if permission was granted) → show the control so it can be
+    // turned on and any error surfaces. This is the fix: don't hide just because permission exists.
+    if(card){card.classList.remove('hide');$('#pushbtn').textContent=Notification.permission==='granted'?'Turn on notifications':'Enable';$('#pushbtn').disabled=false}
   }catch(_){}
 }
 $('#enroll').onclick=enroll;
