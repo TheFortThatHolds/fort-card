@@ -2,6 +2,12 @@
 
 ### Issue API credentials like **credit cards**, not keys.
 
+**Just want it to work?** → **[Get your Fort Card →](https://card.thefortthatholds.com/login)** — $8/mo, zero setup, your vault in 30 seconds.
+
+**Rather run your own?** → [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/TheFortThatHolds/fort-card) — MIT, your infrastructure, your keys, no one in the loop but you.
+
+---
+
 An API key is your bank card *with the PIN written on it* — whoever holds it can do anything it allows, forever, until you find out and kill it. That's how we hand keys to AI agents and scripts today. One leak = total wipeout.
 
 **Fort Card treats your keys like credit cards.** The real key is locked in a vault. Instead of the key, an agent gets a **card**: a useless pointer that's locked to one host, capped to N uses, and freezable with one call. When the card is charged, the vault injects the real key *server-side* and returns only the response — **the agent never sees the key.**
