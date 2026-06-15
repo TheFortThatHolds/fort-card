@@ -41,7 +41,7 @@ function fakeKV() {
 
 const RP = "localhost", ORIGIN = "https://localhost", SPACE = "github:1";
 const env = { VAULT: fakeKV(), SESSION_SECRET: "unit-test-secret", WALLET_RPID: RP, WALLET_ORIGIN: ORIGIN };
-const AUTH = { space: SPACE, human: true, login: "jimmy" };
+const AUTH = { space: SPACE, human: true, login: "octocat" };
 
 const cookieOf = (resp) => { const sc = resp.headers.get("Set-Cookie") || ""; const m = sc.match(/fc_chal=([^;]*)/); return m ? decodeURIComponent(m[1]) : ""; };
 const req = (path, bodyObj, cookie, extra = {}) =>
