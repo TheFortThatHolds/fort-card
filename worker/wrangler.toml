@@ -1,39 +1,23 @@
 name = "fort-card"
 main = "src/worker.js"
 compatibility_date = "2026-06-01"
-# Preserve vars + secrets set in the Cloudflare dashboard across deploys, so a push never wipes
-# this instance's GH_CLIENT_ID / GH_CLIENT_SECRET / MASTER_KEY / etc. They live on the Worker, not
-# in this public template.
+# Keep secrets (GH_CLIENT_SECRET, MASTER_KEY) set on the Worker across deploys.
 keep_vars = true
 
-# 1. Create a KV namespace and paste its id here:
-#      npx wrangler kv namespace create VAULT
 kv_namespaces = [
   { binding = "VAULT", id = "PASTE_YOUR_KV_NAMESPACE_ID_HERE" }
 ]
 
-# 2. Set the secrets (NEVER commit these):
-#      npx wrangler secret put FORT_KEY        # owner bearer token you choose
-#      npx wrangler secret put MASTER_KEY      # base64 of 32 random bytes:  openssl rand -base64 32
-#
-#    Optional — turn on human-in-the-loop so an agent's cards land PENDING until you approve:
-#      npx wrangler secret put FORT_AGENT_KEY  # the token you hand to agents
-#
-# 3. (optional) Get notified when an agent requests a card — set a webhook URL:
-#      [vars]
-#      NOTIFY_WEBHOOK = "https://your-endpoint.example.com/fort-card"
-#
-# 4. Deploy:
-#      npx wrangler deploy
-#
-# ── SaaS mode (multi-tenant): turn on GitHub-App login so each verified identity gets its own
-#    space (`github:<id>`). A pure self-host can skip all of this and just use FORT_KEY.
-#      npx wrangler secret put GH_CLIENT_SECRET   # the Fort Wallet GitHub App's client secret
-#      npx wrangler secret put SESSION_SECRET     # (optional) cookie-signing key; self-mints if unset
-#    [vars]
-#    GH_CLIENT_ID  = "Iv1.xxxxxxxxxxxx"                              # the App's client id
-#    GH_CALLBACK_URL = "https://card.thefortthatholds.com/callback" # EXACT, must match the App
-#    WALLET_RPID   = "card.thefortthatholds.com"                    # passkey relying-party id (host)
-#    WALLET_ORIGIN = "https://card.thefortthatholds.com"            # passkey origin (scheme+host)
-#    # (WALLET_RPID/ORIGIN default to the request host/origin if unset — pin them in prod.)
-#    CORE_ORIGIN   = "https://fort.thefortthatholds.com"            # lets Fort Core frame /app as the plugin
+# Custom domain — Cloudflare binds this on deploy.
+routes = [
+  { pattern = "card.thefortthatholds.com", custom_domain = true }
+]
+
+# Non-secret identity config (a client id is public by design; the domain is public).
+# Secrets live on the Worker, never here. Forking for your own instance? Change these four
+# and the route above to your domain + GitHub App client id.
+[vars]
+GH_CLIENT_ID = "Iv23liaQG8mlnPo1VTl2"
+GH_CALLBACK_URL = "https://card.thefortthatholds.com/callback"
+WALLET_RPID = "card.thefortthatholds.com"
+WALLET_ORIGIN = "https://card.thefortthatholds.com"

@@ -47,20 +47,8 @@ jobs:
           sed -i "s|PASTE_YOUR_KV_NAMESPACE_ID_HERE|$id|" wrangler.toml
           echo "KV namespace bound."
 
-      - name: Bind the custom domain
-        if: ${{ vars.WALLET_DOMAIN != '' }}
-        run: echo "routes = [ { pattern = \"${{ vars.WALLET_DOMAIN }}\", custom_domain = true } ]" >> wrangler.toml
-
-      - name: Deploy (with this instance's identity config)
-        env:
-          GH_CLIENT_ID: ${{ vars.GH_CLIENT_ID }}
-          WALLET_DOMAIN: ${{ vars.WALLET_DOMAIN }}
-        run: |
-          $WR deploy \
-            --var GH_CLIENT_ID:"$GH_CLIENT_ID" \
-            --var GH_CALLBACK_URL:"https://$WALLET_DOMAIN/callback" \
-            --var WALLET_RPID:"$WALLET_DOMAIN" \
-            --var WALLET_ORIGIN:"https://$WALLET_DOMAIN"
+      - name: Deploy
+        run: $WR deploy
 
       - name: Set GH_CLIENT_SECRET (from repo secret; masked, never logged)
         env:
