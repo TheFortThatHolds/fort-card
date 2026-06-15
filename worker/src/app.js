@@ -53,7 +53,7 @@ self.addEventListener('activate',e=>self.clients.claim());
 self.addEventListener('fetch',()=>{});
 self.addEventListener('push',e=>{let d={};try{d=e.data?e.data.json():{}}catch(_){d={}}e.waitUntil(self.registration.showNotification(d.title||'Fort Wallet',{body:d.body||'',data:{url:d.url||'/app'},badge:undefined}))});
 self.addEventListener('notificationclick',e=>{e.notification.close();const u=(e.notification.data&&e.notification.data.url)||'/app';e.waitUntil(self.clients.matchAll({type:'window',includeUncontrolled:true}).then(ws=>{for(const w of ws){if(w.url.indexOf('/app')>=0){return w.focus()}}return self.clients.openWindow(u)}))});`,
-      { headers: { "Content-Type": "application/javascript" } },
+      { headers: { "Content-Type": "application/javascript", "Service-Worker-Allowed": "/app" } },
     );
   }
   if (path === "/app") return new Response(PAGE, { headers: appHeaders(env) });
@@ -171,7 +171,7 @@ async function jget(p,o){const r=await api(p,o);let j={};try{j=await r.json()}ca
 
 let me='',hasPk=false;
 function pkmsg(html){$('#pkstate').innerHTML=html}
-function regSW(){if('serviceWorker'in navigator)navigator.serviceWorker.register('/app/sw.js').catch(()=>{})}
+function regSW(){if('serviceWorker'in navigator)navigator.serviceWorker.register('/app/sw.js',{scope:'/app'}).catch(()=>{})}
 function showApp(){$('#signin').classList.add('hide');$('#lock').classList.add('hide');$('#app').classList.remove('hide');load();maybeNudge()}
 const standalone=()=>matchMedia('(display-mode: standalone)').matches||navigator.standalone===true;
 let deferredPrompt=null;
@@ -274,8 +274,10 @@ async function enablePush(){
     const perm=await Notification.requestPermission();
     if(perm!=='granted'){st('permission: '+perm,'#e7857a');return}
     st('registering worker…');
-    const reg=await navigator.serviceWorker.register('/app/sw.js');
-    await navigator.serviceWorker.ready;
+    const reg=await navigator.serviceWorker.register('/app/sw.js',{scope:'/app'});
+    // don't wait on navigator.serviceWorker.ready (that needs page CONTROL and can hang) — just
+    // wait for this registration to have an ACTIVE worker, which is all subscribe needs.
+    if(!reg.active){await new Promise(res=>{const w=reg.installing||reg.waiting;if(!w){res();return}const h=()=>{if(w.state==='activated'){w.removeEventListener('statechange',h);res()}};w.addEventListener('statechange',h);setTimeout(res,8000)})}
     st('fetching key…');
     const {key}=await jget('/push/key');
     if(!key){st('server returned no VAPID key','#e7857a');return}
@@ -292,7 +294,7 @@ async function refreshPushState(){
   try{
     const card=$('#pushcard');if(card)card.classList.remove('hide');
     const btn=$('#pushbtn');if(btn){btn.textContent='Turn on notifications';btn.disabled=false}
-    const reg=await navigator.serviceWorker.ready.catch(()=>null);
+    const reg=await navigator.serviceWorker.getRegistration('/app').catch(()=>null)||await navigator.serviceWorker.getRegistration().catch(()=>null);
     const sub=reg?await reg.pushManager.getSubscription():null;
     if(sub){try{await jget('/push/subscribe',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({subscription:sub.toJSON()})})}catch(_){}}
   }catch(_){}
