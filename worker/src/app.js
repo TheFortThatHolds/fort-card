@@ -89,7 +89,7 @@ label{font-size:13px;color:#cdc2af;display:block;margin-top:10px}
 
     <h2>This device</h2>
     <div class="card"><div class="row">
-      <div><div id="pkstate" class="muted">Checking passkey…</div><div class="muted">A fingerprint is required for every sensitive act.</div></div>
+      <div><div id="pkstate" class="muted">Checking passkey…</div><div class="muted">Enable your fingerprint to guard your secrets — it never leaves this device.</div></div>
       <button class="btn" id="enroll">Add passkey</button>
     </div></div>
 
@@ -141,7 +141,7 @@ async function enroll(){
     const {publicKey:o}=await jget('/passkey/register/begin',{method:'POST'});
     o.challenge=s2b(o.challenge);o.user.id=s2b(o.user.id);
     o.excludeCredentials=(o.excludeCredentials||[]).map(c=>({...c,id:s2b(c.id)}));
-    pkmsg('Waiting for your fingerprint…');
+    pkmsg('Confirm on your device…');
     let c;
     try{c=await navigator.credentials.create({publicKey:o})}
     catch(err){
