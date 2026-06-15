@@ -60,6 +60,16 @@ jobs:
             echo "GH_CLIENT_SECRET not set yet — skipping (login stays off until it is)."
           fi
 
+      - name: Set GH_APP_PRIVATE_KEY (from repo secret; masked, never logged — the wake-back app key)
+        env:
+          SECRET: ${{ secrets.GH_APP_PRIVATE_KEY }}
+        run: |
+          if [ -n "$SECRET" ]; then
+            printf '%s' "$SECRET" | $WR secret put GH_APP_PRIVATE_KEY
+          else
+            echo "GH_APP_PRIVATE_KEY not set yet — skipping (wake-back stays off until it is)."
+          fi
+
       - name: Mint MASTER_KEY once if absent (random, on the runner; a Worker secret, never KV)
         run: |
           if $WR secret list | grep -q '"MASTER_KEY"'; then
