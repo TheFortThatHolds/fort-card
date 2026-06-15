@@ -122,7 +122,7 @@ label{font-size:13px;color:#cdc2af;display:block;margin-top:10px}
       <div><div id="pkstate" class="muted">Checking passkey…</div><div class="muted">Enable your fingerprint to guard your secrets — it never leaves this device. GitHub stays your recovery, so a lost device never locks you out.</div></div>
       <button class="btn" id="enroll">Add passkey</button>
     </div></div>
-    <div class="card"><div class="row">
+    <div class="card hide" id="pushcard"><div class="row">
       <div><b>Notifications</b><div class="muted">Get a push when an agent requests a card — approve right from your phone.</div></div>
       <button class="btn" id="pushbtn">Enable</button>
     </div></div>
@@ -279,13 +279,20 @@ async function enablePush(){
 // reflect the true notification state (granted + subscribed) so the button doesn't lie or persist
 async function refreshPushState(){
   try{
-    const btn=$('#pushbtn');if(!btn)return;
-    if(!('Notification'in window)||!('serviceWorker'in navigator)||!('PushManager'in window)){btn.textContent='Not supported';btn.disabled=true;return}
-    const reg=await navigator.serviceWorker.ready.catch(()=>null);
-    const sub=reg?await reg.pushManager.getSubscription():null;
-    const on=Notification.permission==='granted'&&!!sub;
-    btn.textContent=on?'Enabled ✓':'Enable';btn.disabled=on;
-    if(on)$('#notifbar').classList.add('hide')
+    const card=$('#pushcard');
+    const supported=('Notification'in window)&&('serviceWorker'in navigator)&&('PushManager'in window);
+    // Only ever show the prompt when the user HASN'T decided yet. Granted or denied → hide for good.
+    if(!supported||Notification.permission!=='default'){
+      if(card)card.classList.add('hide');$('#notifbar').classList.add('hide');
+      // granted but the server lost our subscription → re-register quietly, no UI
+      if(supported&&Notification.permission==='granted'){
+        const reg=await navigator.serviceWorker.ready.catch(()=>null);
+        const sub=reg?await reg.pushManager.getSubscription():null;
+        if(reg&&!sub){try{const {key}=await jget('/push/key');const s=await reg.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:urlB64(key)});await jget('/push/subscribe',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({subscription:s.toJSON()})})}catch(_){}}
+      }
+      return;
+    }
+    if(card)card.classList.remove('hide');
   }catch(_){}
 }
 $('#enroll').onclick=enroll;
