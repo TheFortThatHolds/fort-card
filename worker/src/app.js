@@ -96,6 +96,12 @@ label{font-size:13px;color:#cdc2af;display:block;margin-top:10px}
 .embed .hero,.embed .bar .sub{display:none}
 </style></head><body>
 <div class="wrap" id="root">
+  <div id="installbar" class="hide" style="background:#1d1812;border:1px solid #b87333;border-radius:12px;padding:12px 14px;margin:14px 0;display:flex;align-items:center;justify-content:space-between;gap:12px">
+    <span>📲 Install Fort Wallet on your phone</span><button class="btn p sm" id="installbtn">Install</button>
+  </div>
+  <div id="notifbar" class="hide" style="background:#1d1812;border:1px solid #b87333;border-radius:12px;padding:12px 14px;margin:14px 0;display:flex;align-items:center;justify-content:space-between;gap:12px">
+    <span>🔔 Turn on approval alerts</span><button class="btn p sm" id="notifbtn">Enable</button>
+  </div>
   <div id="signin" class="hide" style="padding:60px 0;text-align:center">
     <div class="hero" style="text-align:left"><h1>Fort <span class="c">Wallet</span></h1><p class="muted">Credentials issued like cards, not keys. Sign in to your space.</p></div>
     <a class="btn p" href="/login" style="margin-top:20px;display:inline-block">Sign in with GitHub</a>
@@ -165,7 +171,12 @@ async function jget(p,o){const r=await api(p,o);let j={};try{j=await r.json()}ca
 let me='',hasPk=false;
 function pkmsg(html){$('#pkstate').innerHTML=html}
 function regSW(){if('serviceWorker'in navigator)navigator.serviceWorker.register('/app/sw.js').catch(()=>{})}
-function showApp(){$('#signin').classList.add('hide');$('#lock').classList.add('hide');$('#app').classList.remove('hide');load()}
+function showApp(){$('#signin').classList.add('hide');$('#lock').classList.add('hide');$('#app').classList.remove('hide');load();maybeNudge()}
+const standalone=()=>matchMedia('(display-mode: standalone)').matches||navigator.standalone===true;
+let deferredPrompt=null;
+addEventListener('beforeinstallprompt',e=>{e.preventDefault();deferredPrompt=e;if(!standalone())$('#installbar').classList.remove('hide')});
+addEventListener('appinstalled',()=>{deferredPrompt=null;$('#installbar').classList.add('hide')});
+function maybeNudge(){if(standalone()&&'Notification'in window&&Notification.permission==='default')$('#notifbar').classList.remove('hide')}
 function showLock(who){$('#lockwho').textContent=who||me;$('#signin').classList.add('hide');$('#app').classList.add('hide');$('#lock').classList.remove('hide')}
 
 async function enroll(){
@@ -246,6 +257,8 @@ async function enablePush(){
 $('#enroll').onclick=enroll;
 $('#unlock').onclick=unlock;
 $('#pushbtn').onclick=enablePush;
+$('#installbtn').onclick=async()=>{if(!deferredPrompt)return;deferredPrompt.prompt();await deferredPrompt.userChoice;deferredPrompt=null;$('#installbar').classList.add('hide')};
+$('#notifbtn').onclick=()=>enablePush().then(()=>$('#notifbar').classList.add('hide'));
 $('#issue').onclick=()=>{const hosts=$('#c_hosts').value.split(',').map(s=>s.trim()).filter(Boolean);const lim=$('#c_limit').value;act(()=>jget('/cards',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:$('#c_name').value,secret:$('#c_secret').value,allowed_hosts:hosts,limit:lim?+lim:undefined})}))};
 $('#store').onclick=()=>act(()=>jget('/secrets',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:$('#s_name').value,value:$('#s_val').value})}));
 $('#mint').onclick=()=>act(async()=>{const ttl=$('#a_ttl').value;const r=await jget('/agents',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({label:$('#a_label').value||'agent',ttl_days:ttl?+ttl:undefined})});alert('Bearer (shown ONCE — copy it now):\\n\\n'+r.token)});
