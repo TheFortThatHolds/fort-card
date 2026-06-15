@@ -134,15 +134,25 @@ const b2b=b=>btoa(String.fromCharCode(...new Uint8Array(b))).replace(/\\+/g,'-')
 const s2b=s=>{s=s.replace(/-/g,'+').replace(/_/g,'/');return Uint8Array.from(atob(s+'='.repeat((4-s.length%4)%4)),c=>c.charCodeAt(0))};
 async function jget(p,o){const r=await api(p,o);let j={};try{j=await r.json()}catch{}if(!r.ok)throw new Error(j.error||('HTTP '+r.status));return j}
 
+function pkmsg(html){$('#pkstate').innerHTML=html}
 async function enroll(){
   try{
+    pkmsg('Starting…');
     const {publicKey:o}=await jget('/passkey/register/begin',{method:'POST'});
     o.challenge=s2b(o.challenge);o.user.id=s2b(o.user.id);
     o.excludeCredentials=(o.excludeCredentials||[]).map(c=>({...c,id:s2b(c.id)}));
-    const c=await navigator.credentials.create({publicKey:o});
-    await jget('/passkey/register/finish',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({clientDataJSON:b2b(c.response.clientDataJSON),attestationObject:b2b(c.response.attestationObject),label:(navigator.userAgentData&&navigator.userAgentData.platform)||'device'})});
-    toast('Passkey added.');load();
-  }catch(e){toast('Enroll failed: '+e.message)}
+    pkmsg('Waiting for your fingerprint…');
+    let c;
+    try{c=await navigator.credentials.create({publicKey:o})}
+    catch(err){
+      // The authenticator already holds a passkey for this space — it's added, just re-read it.
+      if(err&&(err.name==='InvalidStateError'||err.name==='NotAllowedError')){await load();return}
+      throw err;
+    }
+    pkmsg('Saving…');
+    await jget('/passkey/register/finish',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({clientDataJSON:b2b(c.response.clientDataJSON),attestationObject:b2b(c.response.attestationObject),label:'device'})});
+    await load();
+  }catch(e){pkmsg('<b style="color:#e7857a">Add passkey failed: '+(e.message||e.name||'unknown')+'</b>')}
 }
 // the banking-app tap: prove the human for ONE action, get a one-shot token
 async function stepUp(action){
@@ -180,9 +190,9 @@ async function load(){
   }catch(e){$('#cards').innerHTML='<div class="muted">'+e.message+'</div>'}
   try{
     const pk=(await jget('/passkey/list')).passkeys||[];
-    $('#pkstate').innerHTML=pk.length?('<b style="color:#7fae6d">✓ '+pk.length+' passkey'+(pk.length>1?'s':'')+'</b>'):'<b style="color:#e7a85a">No passkey — add one</b>';
+    $('#pkstate').innerHTML=pk.length?('<b style="color:#7fae6d">✓ '+pk.length+' passkey'+(pk.length>1?'s':'')+' on file</b>'):'<b style="color:#e7a85a">No passkey — add one</b>';
     $('#enroll').textContent=pk.length?'Add another':'Add passkey';
-  }catch{}
+  }catch(e){$('#pkstate').innerHTML='<b style="color:#e7857a">Couldn\\'t read passkeys: '+(e.message||'error')+'</b>'}
   try{
     const ag=(await jget('/agents')).agents||[];const ae=$('#agents');ae.innerHTML='';
     if(!ag.length)ae.innerHTML='<div class="muted">None.</div>';
