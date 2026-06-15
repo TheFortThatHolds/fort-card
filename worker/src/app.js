@@ -123,7 +123,7 @@ label{font-size:13px;color:#cdc2af;display:block;margin-top:10px}
       <button class="btn" id="enroll">Add passkey</button>
     </div></div>
     <div class="card hide" id="pushcard"><div class="row">
-      <div><b>Notifications</b><div class="muted">Get a push when an agent requests a card — approve right from your phone.</div></div>
+      <div><b>Notifications</b><div class="muted">Get a push when an agent requests a card — approve right from your phone.</div><div id="pushstatus" class="muted" style="margin-top:6px"></div></div>
       <button class="btn" id="pushbtn">Enable</button>
     </div></div>
 
@@ -266,19 +266,26 @@ async function rollover(name){
 
 function urlB64(b){const pad='='.repeat((4-b.length%4)%4);const s=(b+pad).replace(/-/g,'+').replace(/_/g,'/');const r=atob(s);const u=new Uint8Array(r.length);for(let i=0;i<r.length;i++)u[i]=r.charCodeAt(i);return u}
 async function enablePush(){
+  const st=(m,c)=>{const e=$('#pushstatus');if(e){e.textContent=m;e.style.color=c||'#9a8f7d'}};
   try{
-    if(!('serviceWorker'in navigator)){toast('No service worker support');return}
-    if(!('PushManager'in window)){toast('No PushManager support');return}
+    if(!('serviceWorker'in navigator)){st('no service worker support','#e7857a');return}
+    if(!('PushManager'in window)){st('no PushManager (is it the installed app?)','#e7857a');return}
+    st('requesting permission…');
     const perm=await Notification.requestPermission();
-    if(perm!=='granted'){toast('Permission: '+perm);return}
+    if(perm!=='granted'){st('permission: '+perm,'#e7857a');return}
+    st('registering worker…');
     const reg=await navigator.serviceWorker.register('/app/sw.js');
     await navigator.serviceWorker.ready;
-    const old=await reg.pushManager.getSubscription();if(old){await old.unsubscribe().catch(()=>{})}
+    st('fetching key…');
     const {key}=await jget('/push/key');
+    if(!key){st('server returned no VAPID key','#e7857a');return}
+    st('subscribing…');
+    const old=await reg.pushManager.getSubscription();if(old){await old.unsubscribe().catch(()=>{})}
     const sub=await reg.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:urlB64(key)});
+    st('saving to server…');
     const r=await jget('/push/subscribe',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({subscription:sub.toJSON()})});
-    toast('Subscribed ✓ '+(r.id||''));await refreshPushState()
-  }catch(e){toast('Notif FAIL: '+(e.name||'')+' — '+(e.message||e))}
+    st('✓ subscribed ('+(r.id||'ok')+')','#7fae6d');await refreshPushState()
+  }catch(e){st('FAIL: '+(e.name||'')+' — '+(e.message||e),'#e7857a')}
 }
 // (debug) keep the control visible + tappable; self-heal the server copy if the browser has one
 async function refreshPushState(){
