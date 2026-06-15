@@ -246,9 +246,22 @@ async function load(){
   }catch{}
   try{
     const ss=(await jget('/secrets')).secrets||[];
-    $('#secrets').innerHTML=ss.length?ss.map(n=>'<div class="card"><b>'+n+'</b><div class="muted">stored · use it as a card\\'s "secret"</div></div>').join(''):'<div class="muted">No secrets stored yet.</div>';
+    const se=$('#secrets');se.innerHTML='';
+    if(!ss.length){se.innerHTML='<div class="muted">No secrets stored yet.</div>'}
+    else ss.forEach(n=>{const el=document.createElement('div');el.className='card';el.innerHTML='<div class="row"><div><b>'+n+'</b><div class="muted">stored · the key a card draws on</div></div><div class="btns"></div></div>';const b=mkbtn('Roll over');b.onclick=()=>rollover(n);el.querySelector('.btns').append(b);se.append(el)});
   }catch(e){$('#secrets').innerHTML='<div class="muted">'+e.message+'</div>'}
   refreshPushState();
+}
+// roll a key over: fingerprint pops, paste the new value, it overwrites in place. The old value is
+// gone; cards pointing at this name now draw on the new key. No re-issuing cards needed.
+async function rollover(name){
+  try{
+    await passkeyAssert();
+    const v=prompt('Paste the NEW value for "'+name+'"');
+    if(!v)return;
+    await jget('/secrets',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,value:v})});
+    toast('Rolled over ✓');load();
+  }catch(e){toast(e.message||e.name||'cancelled')}
 }
 
 function urlB64(b){const pad='='.repeat((4-b.length%4)%4);const s=(b+pad).replace(/-/g,'+').replace(/_/g,'/');const r=atob(s);const u=new Uint8Array(r.length);for(let i=0;i<r.length;i++)u[i]=r.charCodeAt(i);return u}
