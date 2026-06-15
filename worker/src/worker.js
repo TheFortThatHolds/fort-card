@@ -251,6 +251,11 @@ export function ssrfBlocked(host) {
   return false;
 }
 
+async function sha256hex(s) {
+  const d = new Uint8Array(await crypto.subtle.digest("SHA-256", enc.encode(String(s))));
+  return [...d].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
 // ── charge a card in a space (the settle path, factored so /cards/:id/use and the agent path share
 // it): run the rules, inject the key server-side, return only the response. Mutates used + logs. ──
 async function chargeCard(env, space, card, req) {
@@ -346,6 +351,11 @@ export default {
         // charge a card the owner already approved in this space — the wake → use step.
         const c = await env.VAULT.get(K(aspace, "card", String(b.card)), "json");
         if (!c) return json({ error: "no such card in this space" }, 404);
+        // the charger must hold the one-time charge token handed to the requester. Naming the repo
+        // + card id is NOT enough — only the agent that made the request can spend the card.
+        if (!c.charge_hash || (await sha256hex(b.token || "")) !== c.charge_hash) {
+          return json({ error: "charge token required/invalid — only the requesting agent can charge this card" }, 403);
+        }
         return json(await chargeCard(env, aspace, c, b.request));
       }
       // /agent/request
@@ -359,6 +369,9 @@ export default {
         return json({ error: "charges required: a positive integer (how many times you'll use this card). Open-ended cards can't be requested." }, 400);
       }
       const rid = "card_" + crypto.randomUUID().slice(0, 8);
+      // one-time charge token, returned ONCE to this requester. Only the holder can charge the card
+      // (we store only its hash). Binds the charger to the agent that actually made the request.
+      const chargeToken = "fcu_" + b64e(crypto.getRandomValues(new Uint8Array(24)).buffer).replace(/[+/=]/g, "");
       const reqCard = {
         id: rid,
         name: b.label || "request from " + b.repo,
@@ -372,13 +385,14 @@ export default {
         expires_at: null,
         frozen: true,
         pending: true,
+        charge_hash: await sha256hex(chargeToken),
         wake: b.pr ? { repo: String(b.repo), pr: Number(b.pr) } : null,
         created: new Date().toISOString(),
       };
       await env.VAULT.put(K(aspace, "card", rid), JSON.stringify(reqCard));
-      await logEvent(env, aspace, "card.request", { id: rid, name: reqCard.name, secret: reqCard.secret, allowed_hosts: reqCard.allowed_hosts, repo: b.repo });
+      await logEvent(env, aspace, "card.request", { id: rid, name: reqCard.name, secret: reqCard.secret, allowed_hosts: reqCard.allowed_hosts, limit: charges, repo: b.repo });
       await notifyCardRequest(env, aspace, reqCard);
-      return json({ ok: true, pending: true, card: rid, note: "Landed in the owner's wallet as a pending approval. They get a push; on approval the wake-back posts to your PR." });
+      return json({ ok: true, pending: true, card: rid, charge_token: chargeToken, note: "Pending the owner's approval (capped at " + charges + " charge" + (charges > 1 ? "s" : "") + "). Keep charge_token — only its holder can charge this card via /agent/use {token}." });
     }
 
     // WHO is calling, and WHICH space do they operate in?
