@@ -45,6 +45,8 @@
 //   var    `NOTIFY_WEBHOOK`  (optional) URL that gets a JSON POST when an agent requests a card
 //                            (best-effort; the hosted Core fans this out to email + web-push)
 
+import { handleAuth, resolveSession, oauthConfigured } from "./auth.js";
+
 const enc = new TextEncoder();
 const dec = new TextDecoder();
 const b64e = (buf) => btoa(String.fromCharCode(...new Uint8Array(buf)));
@@ -198,24 +200,40 @@ async function notifyCardRequest(env, card) {
 
 export default {
   async fetch(request, env) {
-    // FORT_KEY is always required. MASTER_KEY is required UNLESS the last mile is delegated —
-    // in split mode the control plane holds no root key and never decrypts (that's the point).
-    if (!env.FORT_KEY || (!env.MASTER_KEY && !splitMode(env))) {
-      return json({ error: "server not configured — set FORT_KEY, and MASTER_KEY (or LAST_MILE_URL + LAST_MILE_KEY for a split deploy)" }, 500);
+    // Crypto must be available (MASTER_KEY, or a delegated last mile in split mode), and at least
+    // one way to authenticate: the self-host owner token (FORT_KEY) and/or GitHub-App OAuth login
+    // (the SaaS path). A pure self-host sets FORT_KEY; a managed instance configures OAuth.
+    const cryptoReady = env.MASTER_KEY || splitMode(env);
+    const authReady = env.FORT_KEY || oauthConfigured(env);
+    if (!cryptoReady || !authReady) {
+      return json({ error: "server not configured — need MASTER_KEY (or LAST_MILE_URL + LAST_MILE_KEY), and FORT_KEY or the GitHub-App OAuth vars (GH_CLIENT_ID/SECRET/CALLBACK_URL)" }, 500);
     }
     const url = new URL(request.url);
     const path = url.pathname.replace(/\/+$/, "") || "/";
 
     if (path === "/") return json({ name: "fort-card", ok: true, docs: "https://github.com/TheFortThatHolds/fort-card" });
 
-    // Every route is gated by a bearer token. The owner token is the human; an optional agent
-    // token is the everyday non-human caller. Both operate inside the SAME space (the owner's,
-    // `FORT_SPACE`, default "owner"); OAuth sign-in will resolve a per-identity space here instead.
+    // Identity routes (login / callback / logout / whoami). When OAuth is unconfigured these
+    // don't exist and handleAuth returns null — the self-host bearer path below is unchanged.
+    const authResp = await handleAuth(request, env, url, path);
+    if (authResp) return authResp;
+
+    // WHO is calling, and WHICH space do they operate in?
+    //   • OAuth session  → a verified SaaS tenant, operating in their OWN identity-born space.
+    //   • FORT_KEY       → the self-host owner (single-tenant, `FORT_SPACE`).
+    //   • FORT_AGENT_KEY → the everyday non-human caller (self-host space; per-space minted
+    //                      agent bearers arrive with build-order #5).
+    // A verified human (session OR owner token) may perform owner acts. NOTE: per DESIGN §3/§4
+    // those owner acts (issue-active / store / rotate / unfreeze) must additionally require a
+    // fresh passkey tap — that ceremony lands in build-order #4 and gates this before any managed
+    // multi-tenant deploy. Until then OAuth stays off in prod (no GitHub App = these routes 404).
+    const session = await resolveSession(request, env);
     const auth = request.headers.get("Authorization") || "";
-    const human = auth === "Bearer " + env.FORT_KEY;
+    const ownerToken = !!env.FORT_KEY && auth === "Bearer " + env.FORT_KEY;
     const agent = !!env.FORT_AGENT_KEY && auth === "Bearer " + env.FORT_AGENT_KEY;
-    if (!human && !agent) return json({ error: "unauthorized" }, 401);
-    const space = env.FORT_SPACE || "owner";
+    const human = !!session || ownerToken;
+    if (!session && !ownerToken && !agent) return json({ error: "unauthorized" }, 401);
+    const space = session ? session.space : env.FORT_SPACE || "owner";
     const body = request.method === "GET" ? {} : await request.json().catch(() => ({}));
 
     // ── store a secret (owner only — seeding a real key into the vault is a human act) ──

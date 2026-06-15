@@ -21,3 +21,11 @@ kv_namespaces = [
 #
 # 4. Deploy:
 #      npx wrangler deploy
+#
+# ── SaaS mode (multi-tenant): turn on GitHub-App login so each verified identity gets its own
+#    space (`github:<id>`). A pure self-host can skip all of this and just use FORT_KEY.
+#      npx wrangler secret put GH_CLIENT_SECRET   # the Fort Wallet GitHub App's client secret
+#      npx wrangler secret put SESSION_SECRET     # (optional) cookie-signing key; self-mints if unset
+#    [vars]
+#    GH_CLIENT_ID  = "Iv1.xxxxxxxxxxxx"                              # the App's client id
+#    GH_CALLBACK_URL = "https://card.thefortthatholds.com/callback" # EXACT, must match the App

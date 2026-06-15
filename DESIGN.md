@@ -154,8 +154,12 @@ operator's box.
 
 1. ~~Key authority — envelope encryption + owner-gated rotation~~ ✅ (PR #2)
 2. ~~Space-isolate every record (multi-tenant foundation) + per-space DEK~~ ✅ (PR #2)
-3. GitHub App auth → space born on first verified login (state, immutable id, server-derived)
+3. **GitHub App auth → space born on first verified login (state, immutable id, server-derived)**
+   — 🚧 login flow built (`src/auth.js`: `/login` `/callback` `/logout` `/whoami`, signed state +
+   session cookies, space = `github:<id>`). Needs the GitHub App created (owner) to go live.
 4. Passkey enroll + `userVerification`-every-time for all human actions; no human session
+   — **gates the owner acts (issue-active / store / rotate / unfreeze) for OAuth sessions; until
+   it lands, OAuth must stay off in any managed multi-tenant deploy.**
 5. Mint agent bearers (hashed, TTL'd, revocable, agent-scoped)
 6. Two-tier secrets — autonomous (DEK) vs sovereign (passkey-PRF, host-blind)
 7. SSRF + header-injection hardening on `/use`; soft-cap note
