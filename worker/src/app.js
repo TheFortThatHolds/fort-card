@@ -243,6 +243,7 @@ async function load(){
     const ev=(await jget('/events?limit=12')).events||[];
     $('#events').innerHTML=ev.length?ev.map(e=>'<div class="row" style="border-top:1px solid #2c251c;padding:7px 0"><span>'+e.type+'</span><span class="muted">'+(e.ts||'').slice(5,16).replace('T',' ')+'</span></div>').join(''):'<div class="muted">No activity.</div>';
   }catch{}
+  refreshPushState();
 }
 
 function urlB64(b){const pad='='.repeat((4-b.length%4)%4);const s=(b+pad).replace(/-/g,'+').replace(/_/g,'/');const r=atob(s);const u=new Uint8Array(r.length);for(let i=0;i<r.length;i++)u[i]=r.charCodeAt(i);return u}
@@ -254,8 +255,20 @@ async function enablePush(){
     const {key}=await jget('/push/key');
     const sub=await reg.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:urlB64(key)});
     await jget('/push/subscribe',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({subscription:sub.toJSON()})});
-    $('#pushbtn').textContent='Enabled ✓';toast('Notifications on')
+    toast('Notifications on');await refreshPushState()
   }catch(e){toast('Could not enable: '+(e.message||e.name))}
+}
+// reflect the true notification state (granted + subscribed) so the button doesn't lie or persist
+async function refreshPushState(){
+  try{
+    const btn=$('#pushbtn');if(!btn)return;
+    if(!('Notification'in window)||!('serviceWorker'in navigator)||!('PushManager'in window)){btn.textContent='Not supported';btn.disabled=true;return}
+    const reg=await navigator.serviceWorker.ready.catch(()=>null);
+    const sub=reg?await reg.pushManager.getSubscription():null;
+    const on=Notification.permission==='granted'&&!!sub;
+    btn.textContent=on?'Enabled ✓':'Enable';btn.disabled=on;
+    if(on)$('#notifbar').classList.add('hide')
+  }catch(_){}
 }
 $('#enroll').onclick=enroll;
 $('#unlock').onclick=unlock;
