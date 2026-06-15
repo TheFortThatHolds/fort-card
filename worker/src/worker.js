@@ -45,6 +45,11 @@
 //   var    `NOTIFY_WEBHOOK`  (optional) URL that gets a JSON POST when an agent requests a card
 //                            (best-effort; the hosted Core fans this out to email + web-push)
 
+import { handleAuth, resolveSession, oauthConfigured } from "./auth.js";
+import { handlePasskey, requireStepUp } from "./webauthn.js";
+import { resolveAgentBearer, mintAgentBearer, listAgents, revokeAgent } from "./agents.js";
+import { handleApp } from "./app.js";
+
 const enc = new TextEncoder();
 const dec = new TextDecoder();
 const b64e = (buf) => btoa(String.fromCharCode(...new Uint8Array(buf)));
@@ -196,31 +201,110 @@ async function notifyCardRequest(env, card) {
   }
 }
 
+// ── SSRF guard: refuse private / loopback / link-local / cloud-metadata targets. The card's
+// allowed_hosts is the merchant allowlist; this is the second, network-layer fence, enforced at
+// the control plane BEFORE a charge so a misconfigured card can never point the key at an internal
+// address. (The last-mile worker re-checks this too — belt and suspenders.) ──
+export function ssrfBlocked(host) {
+  const h = host.toLowerCase().replace(/^\[|\]$/g, ""); // strip IPv6 brackets
+  if (h === "localhost" || h.endsWith(".localhost") || h.endsWith(".local") || h.endsWith(".internal")) return true;
+  if (h === "::1" || h === "0.0.0.0" || h.startsWith("fc") || h.startsWith("fd") || h.startsWith("fe80")) return true;
+  const m = h.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (m) {
+    const [a, b] = [Number(m[1]), Number(m[2])];
+    if (a === 127 || a === 10 || a === 0) return true; // loopback / private / this-host
+    if (a === 169 && b === 254) return true; // link-local + cloud metadata (169.254.169.254)
+    if (a === 192 && b === 168) return true; // private
+    if (a === 172 && b >= 16 && b <= 31) return true; // private
+    if (a === 100 && b >= 64 && b <= 127) return true; // carrier-grade NAT
+  }
+  return false;
+}
+
 export default {
   async fetch(request, env) {
-    // FORT_KEY is always required. MASTER_KEY is required UNLESS the last mile is delegated —
-    // in split mode the control plane holds no root key and never decrypts (that's the point).
-    if (!env.FORT_KEY || (!env.MASTER_KEY && !splitMode(env))) {
-      return json({ error: "server not configured — set FORT_KEY, and MASTER_KEY (or LAST_MILE_URL + LAST_MILE_KEY for a split deploy)" }, 500);
+    // Crypto must be available (MASTER_KEY, or a delegated last mile in split mode), and at least
+    // one way to authenticate: the self-host owner token (FORT_KEY) and/or GitHub-App OAuth login
+    // (the SaaS path). A pure self-host sets FORT_KEY; a managed instance configures OAuth.
+    const cryptoReady = env.MASTER_KEY || splitMode(env);
+    const authReady = env.FORT_KEY || oauthConfigured(env);
+    if (!cryptoReady || !authReady) {
+      return json({ error: "server not configured — need MASTER_KEY (or LAST_MILE_URL + LAST_MILE_KEY), and FORT_KEY or the GitHub-App OAuth vars (GH_CLIENT_ID/SECRET/CALLBACK_URL)" }, 500);
     }
     const url = new URL(request.url);
     const path = url.pathname.replace(/\/+$/, "") || "/";
 
     if (path === "/") return json({ name: "fort-card", ok: true, docs: "https://github.com/TheFortThatHolds/fort-card" });
 
-    // Every route is gated by a bearer token. The owner token is the human; an optional agent
-    // token is the everyday non-human caller. Both operate inside the SAME space (the owner's,
-    // `FORT_SPACE`, default "owner"); OAuth sign-in will resolve a per-identity space here instead.
+    // The wallet PWA (and its manifest / service worker). Public HTML — the page itself drives
+    // auth via /whoami. This same page is what Fort Core embeds as the plugin (?embed=1).
+    const appResp = handleApp(env, request, url, path);
+    if (appResp) return appResp;
+
+    // Identity routes (login / callback / logout / whoami). When OAuth is unconfigured these
+    // don't exist and handleAuth returns null — the self-host bearer path below is unchanged.
+    const authResp = await handleAuth(request, env, url, path);
+    if (authResp) return authResp;
+
+    // WHO is calling, and WHICH space do they operate in?
+    //   • OAuth session   → a verified SaaS tenant, operating in their OWN identity-born space.
+    //   • FORT_KEY        → the self-host owner (single-tenant, `FORT_SPACE`).
+    //   • minted bearer   → an agent the owner provisioned (resolves to its own space).
+    //   • FORT_AGENT_KEY  → the self-host single agent (legacy/self-host space).
+    const session = await resolveSession(request, env);
     const auth = request.headers.get("Authorization") || "";
-    const human = auth === "Bearer " + env.FORT_KEY;
-    const agent = !!env.FORT_AGENT_KEY && auth === "Bearer " + env.FORT_AGENT_KEY;
-    if (!human && !agent) return json({ error: "unauthorized" }, 401);
-    const space = env.FORT_SPACE || "owner";
+    const bearer = auth.startsWith("Bearer ") ? auth.slice(7) : "";
+    const ownerToken = !!env.FORT_KEY && bearer === env.FORT_KEY;
+    const legacyAgent = !!env.FORT_AGENT_KEY && bearer === env.FORT_AGENT_KEY;
+    // A minted bearer carries its own space; only resolve it when it isn't an owner/legacy token.
+    const mintedAgent = !session && !ownerToken && !legacyAgent ? await resolveAgentBearer(env, bearer) : null;
+    const agent = legacyAgent || !!mintedAgent;
+    const human = !!session || ownerToken;
+    if (!session && !ownerToken && !agent) return json({ error: "unauthorized" }, 401);
+    const space = session ? session.space : mintedAgent ? mintedAgent.space : env.FORT_SPACE || "owner";
+
+    // Passkey enroll + per-action step-up — the banking-app gate. Only an authenticated human in a
+    // space reaches these; OAuth-unconfigured self-host never hits them (no session, owner uses a token).
+    const pkResp = await handlePasskey(env, request, url, path, human ? { space, human, login: session ? session.login : "owner" } : null);
+    if (pkResp) return pkResp;
+
+    // Owner acts by an OAuth human (a browser session) demand a FRESH passkey tap, EACH TIME
+    // (DESIGN §3): the route requires an X-Fort-Action step-up token scoped to this act. A self-host
+    // owner presenting FORT_KEY is an API token, not a browser human, so it is not step-up-gated.
+    const stepIfSession = async (action) => (session ? requireStepUp(env, request, space, action) : null);
+
     const body = request.method === "GET" ? {} : await request.json().catch(() => ({}));
+
+    // ── agents: mint / list / revoke scoped bearers (mint + revoke are owner acts, step-up gated) ──
+    if (path === "/agents" && request.method === "POST") {
+      if (!human) return json({ error: HUMAN_REQUIRED }, 403);
+      const s = await stepIfSession("agent.mint");
+      if (s) return s;
+      const minted = await mintAgentBearer(env, space, { label: body.label, ttl_days: body.ttl_days });
+      await logEvent(env, space, "agent.mint", { id: minted.id, label: minted.label, expires_at: minted.expires_at });
+      return json({ ...minted, note: "This token is shown ONCE. Store it now; it cannot be recovered." });
+    }
+    if (path === "/agents" && request.method === "GET") {
+      return json({ agents: await listAgents(env, space) });
+    }
+    {
+      const am = path.match(/^\/agents\/([^/]+)$/);
+      if (am && request.method === "DELETE") {
+        if (!human) return json({ error: HUMAN_REQUIRED }, 403);
+        const s = await stepIfSession("agent.revoke");
+        if (s) return s;
+        const r = await revokeAgent(env, space, am[1]);
+        if (r.error) return json(r, 404);
+        await logEvent(env, space, "agent.revoke", { id: am[1] });
+        return json(r);
+      }
+    }
 
     // ── store a secret (owner only — seeding a real key into the vault is a human act) ──
     if (path === "/secrets" && request.method === "POST") {
       if (!human) return json({ error: HUMAN_REQUIRED }, 403);
+      const s = await stepIfSession("secret.store");
+      if (s) return s;
       if (!body.name || !body.value) return json({ error: "name and value required" }, 400);
       let sealed;
       if (splitMode(env)) {
@@ -242,6 +326,8 @@ export default {
     // agent token can never trigger it. The owner generates; only the owner commits. ──
     if (path === "/rotate" && request.method === "POST") {
       if (!human) return json({ error: HUMAN_REQUIRED }, 403);
+      const s = await stepIfSession("vault.rotate");
+      if (s) return s;
       let res;
       if (splitMode(env)) {
         // gather every sealed secret + the current active wrapped DEK, hand them to the last-mile
@@ -275,6 +361,11 @@ export default {
         return json({ error: "name, secret, and a non-empty allowed_hosts array are required" }, 400);
       }
       const pending = !human; // an agent can ask, but never mint its own live allowance
+      if (!pending) {
+        // a human issuing an ACTIVE card is an owner act — fresh tap (sessions only).
+        const s = await stepIfSession("card.issue");
+        if (s) return s;
+      }
       const id = "card_" + crypto.randomUUID().slice(0, 8);
       const card = {
         id,
@@ -341,6 +432,10 @@ export default {
         // Freezing (kill switch) is a de-escalation any holder may do. UNFREEZING re-authorizes
         // a card — owner only — and unfreezing a PENDING card is how the owner approves it.
         if (!frozen && !human) return json({ error: HUMAN_REQUIRED }, 403);
+        if (!frozen) {
+          const s = await stepIfSession("card.approve");
+          if (s) return s;
+        }
         const approved = !frozen && !!card.pending;
         card.frozen = frozen;
         if (!frozen) card.pending = false;
@@ -366,6 +461,7 @@ export default {
         if (!body.url) return decline("request url required");
         let host;
         try { host = new URL(body.url).host; } catch { return decline("bad url"); }
+        if (ssrfBlocked(host)) return decline(`host ${host} blocked (SSRF: private/loopback/link-local)`);
         if (!card.allowed_hosts.includes(host)) return decline(`host ${host} not allowed for this card`);
 
         // settle: the real key is injected server-side and ONLY the response comes back. In split
