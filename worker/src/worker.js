@@ -200,6 +200,26 @@ async function notifyCardRequest(env, card) {
   }
 }
 
+// ── SSRF guard: refuse private / loopback / link-local / cloud-metadata targets. The card's
+// allowed_hosts is the merchant allowlist; this is the second, network-layer fence, enforced at
+// the control plane BEFORE a charge so a misconfigured card can never point the key at an internal
+// address. (The last-mile worker re-checks this too — belt and suspenders.) ──
+export function ssrfBlocked(host) {
+  const h = host.toLowerCase().replace(/^\[|\]$/g, ""); // strip IPv6 brackets
+  if (h === "localhost" || h.endsWith(".localhost") || h.endsWith(".local") || h.endsWith(".internal")) return true;
+  if (h === "::1" || h === "0.0.0.0" || h.startsWith("fc") || h.startsWith("fd") || h.startsWith("fe80")) return true;
+  const m = h.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (m) {
+    const [a, b] = [Number(m[1]), Number(m[2])];
+    if (a === 127 || a === 10 || a === 0) return true; // loopback / private / this-host
+    if (a === 169 && b === 254) return true; // link-local + cloud metadata (169.254.169.254)
+    if (a === 192 && b === 168) return true; // private
+    if (a === 172 && b >= 16 && b <= 31) return true; // private
+    if (a === 100 && b >= 64 && b <= 127) return true; // carrier-grade NAT
+  }
+  return false;
+}
+
 export default {
   async fetch(request, env) {
     // Crypto must be available (MASTER_KEY, or a delegated last mile in split mode), and at least
@@ -435,6 +455,7 @@ export default {
         if (!body.url) return decline("request url required");
         let host;
         try { host = new URL(body.url).host; } catch { return decline("bad url"); }
+        if (ssrfBlocked(host)) return decline(`host ${host} blocked (SSRF: private/loopback/link-local)`);
         if (!card.allowed_hosts.includes(host)) return decline(`host ${host} not allowed for this card`);
 
         // settle: the real key is injected server-side and ONLY the response comes back. In split

@@ -166,7 +166,10 @@ operator's box.
    `/agents` mint/list/revoke; SHA-256 hash at rest, shown once, per-space resolve). Mint + revoke
    are step-up-gated owner acts. Tested (`test/agents.test.mjs`).
 6. Two-tier secrets — autonomous (DEK) vs sovereign (passkey-PRF, host-blind)
-7. SSRF + header-injection hardening on `/use`; soft-cap note (last-mile ✅; single-worker `/use` ⬜)
+7. **SSRF + header-injection hardening on `/use`** — ✅ control-plane `/use` now SSRF-blocks
+   private/loopback/link-local/metadata before any charge (single-worker + split paths);
+   credential header injected last. Tested (`test/ssrf.test.mjs`). Soft-cap under KV concurrency
+   still noted (a hard cap needs a Durable Object).
 8. Approval + wake to the user's own repo (never the public one)
 9. The FML control plugin (drives the wallet API; holds no keys)
 10. ~~Split deploy — last-mile worker (decrypt+inject on the owner's infra); control plane plaintext-blind~~ ✅

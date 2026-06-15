@@ -25,3 +25,5 @@ jobs:
         run: node test/webauthn.test.mjs
       - name: Agent-bearer lifecycle
         run: node test/agents.test.mjs
+      - name: SSRF guard
+        run: node test/ssrf.test.mjs
