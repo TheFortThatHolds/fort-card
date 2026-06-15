@@ -1,34 +1,19 @@
-// Fort Card — BILLING. The worker IS the merchant: it does every Stripe step itself with the
-// operator's key (a Worker secret, STRIPE_KEY) — find-or-create the ONE subscription product+price,
-// open Checkout sessions, and confirm payment by QUERYING Stripe. No webhook, no hand-built buy
-// button, no dashboard scavenger hunt. The operator pastes one key; the worker does the rest.
+// Fort Card — BILLING, THROUGH A CARD. This module NEVER sees the Stripe key. It is handed a
+// `charge(request)` function and does every Stripe call by CHARGING A FORT CARD: the wallet injects
+// the key server-side (scoped to api.stripe.com, capped, freezable, every call on the statement) and
+// hands back only the response. Billing reads responses, nothing else. No raw key, nothing
+// load-bearing — the card is the single door to Stripe, and freezing it stops all billing cold.
 //
-// The customer agrees to the operator's terms via Stripe Checkout's native ToS consent — the
-// agreement checkbox lives on Stripe's page, using the ToS URL set in the operator's Stripe settings.
+// The operator issues ONE Stripe card in their wallet (allowed host api.stripe.com, pointed at their
+// Stripe secret). The worker finds it and builds `charge` from it (see worker.js). No Stripe key in
+// the repo, no Worker secret, no dashboard button — the wallet is the merchant, via its own card.
 //
-// Binary, by design: a space is subscribed or it isn't — no tiers. Gated AT THE DOOR (after
-// sign-in, before any wallet use): an unsubscribed space can view its (empty) wallet and subscribe,
-// but can't store, issue, charge, or let an agent use it. Self-host leaves STRIPE_KEY unset → billing
-// is OFF and nothing is ever gated (the FORT_KEY owner never pays the SaaS operator).
-//
-// The billing key comes from the wallet's OWN vault by default — the wallet pays for itself out of
-// the key it already holds. Set OPERATOR_SPACE to the operator's space and the worker reads the
-// Stripe key from that space's vault secret (STRIPE_KEY_SECRET, default "stripe-agent-key"), opening
-// it with MASTER_KEY server-side — never a repo secret. A Worker secret STRIPE_KEY still works as a
-// fallback for a pure self-host that would rather not put the key in the vault. (Resolution + the
-// vault read live in worker.js; this module just receives env.STRIPE_KEY already populated.)
-//
-// Config (Worker vars/secrets — operator of a managed instance):
-//   var    OPERATOR_SPACE          the operator's space (e.g. github:123) whose vault holds the key
-//   var    STRIPE_KEY_SECRET       (optional) the vault secret name — default "stripe-agent-key"
-//   secret STRIPE_KEY              (optional fallback) the Stripe key as a Worker secret instead
+// Config (Worker vars — operator of a managed instance):
+//   var    OPERATOR_SPACE            the operator's space (e.g. github:123) that holds the Stripe card
 //   var    SUBSCRIPTION_PRICE_CENTS  (optional) monthly price in cents — default 800 ($8)
 //   var    SUBSCRIPTION_CURRENCY     (optional) ISO currency — default "usd"
 //   var    SUBSCRIPTION_PRODUCT_NAME (optional) the product's display name — default "Fort Card"
 
-export function billingEnabled(env) {
-  return !!env.STRIPE_KEY;
-}
 export function priceCents(env) {
   const n = parseInt(env.SUBSCRIPTION_PRICE_CENTS || "800", 10);
   return Number.isInteger(n) && n > 0 ? n : 800;
@@ -52,22 +37,16 @@ export function formEncode(obj, prefix) {
   return parts.filter(Boolean).join("&");
 }
 
-async function sapi(env, method, path, params) {
-  const r = await fetch("https://api.stripe.com/v1" + path, {
-    method,
-    headers: { Authorization: "Bearer " + env.STRIPE_KEY, "Content-Type": "application/x-www-form-urlencoded" },
-    body: params ? formEncode(params) : undefined,
-  });
-  const j = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error("stripe " + path + ": " + ((j.error && j.error.message) || r.status));
-  return j;
+const FORM = { "Content-Type": "application/x-www-form-urlencoded" };
+// Charge the Stripe card to run one API call; turn a non-2xx into a thrown error. The card (not this
+// code) holds the key — `charge` is the wallet's settle path bound to the operator's Stripe card.
+async function call(charge, req) {
+  const r = await charge(req);
+  if (r.status >= 400) throw new Error("stripe " + r.status + ": " + ((r.body && r.body.error && r.body.error.message) || r.status));
+  return r.body;
 }
-async function sget(env, path) {
-  const r = await fetch("https://api.stripe.com/v1" + path, { headers: { Authorization: "Bearer " + env.STRIPE_KEY } });
-  const j = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error("stripe " + path + ": " + ((j.error && j.error.message) || r.status));
-  return j;
-}
+const post = (charge, path, params) => call(charge, { url: "https://api.stripe.com/v1" + path, method: "POST", headers: FORM, body: formEncode(params) });
+const get = (charge, path) => call(charge, { url: "https://api.stripe.com/v1" + path, method: "GET" });
 
 const bkey = (space) => space + ":billing";
 async function readBilling(env, space) {
@@ -78,16 +57,16 @@ async function writeBilling(env, space, rec) {
   await env.VAULT.put(bkey(space), JSON.stringify(rec));
 }
 
-// Find-or-create the operator's single subscription product+price. Cached in KV so it's made once,
-// then reused for every customer. The operator never touches the Stripe dashboard.
-export async function ensurePrice(env) {
+// Find-or-create the operator's single subscription product+price by charging the card. Cached in KV
+// so it's made once, then reused for every customer. The operator never touches the Stripe dashboard.
+export async function ensurePrice(env, charge) {
   const cached = await env.VAULT.get("_billing:price");
   if (cached) return cached;
-  const product = await sapi(env, "POST", "/products", {
+  const product = await post(charge, "/products", {
     name: env.SUBSCRIPTION_PRODUCT_NAME || "Fort Card",
     description: "Fort Card — agent credential wallet (monthly subscription)",
   });
-  const price = await sapi(env, "POST", "/prices", {
+  const price = await post(charge, "/prices", {
     product: product.id,
     unit_amount: priceCents(env),
     currency: env.SUBSCRIPTION_CURRENCY || "usd",
@@ -97,20 +76,19 @@ export async function ensurePrice(env) {
   return price.id;
 }
 
-// Open a Checkout session for this space. client_reference_id binds the payment back to the space,
-// so confirmation can verify it's the right tenant. Returns the hosted Checkout URL to redirect to.
-export async function createCheckout(env, space, origin) {
-  const price = await ensurePrice(env);
-  const s = await sapi(env, "POST", "/checkout/sessions", {
+// Open a Checkout session for this space (by charging the card). client_reference_id binds the
+// payment back to the space so confirmation can verify the tenant. consent_collection turns on
+// Stripe's native ToS agreement on its own page (using the ToS URL set in the operator's Stripe
+// settings). Returns the hosted Checkout URL to redirect to.
+export async function createCheckout(env, charge, space, origin) {
+  const price = await ensurePrice(env, charge);
+  const s = await post(charge, "/checkout/sessions", {
     mode: "subscription",
     line_items: [{ price, quantity: 1 }],
     success_url: origin + "/app?billing=success&session_id={CHECKOUT_SESSION_ID}",
     cancel_url: origin + "/app?billing=cancel",
     client_reference_id: space,
     allow_promotion_codes: true,
-    // Stripe Checkout's native ToS agreement: it renders the "I agree to the Terms of Service"
-    // checkbox on Stripe's own page, using the ToS URL configured in the operator's Stripe settings.
-    // No app-side checkbox, no ToS link in our code — it's an option on the checkout itself.
     consent_collection: { terms_of_service: "required" },
     metadata: { space },
     subscription_data: { metadata: { space } },
@@ -119,9 +97,9 @@ export async function createCheckout(env, space, origin) {
 }
 
 // Confirm by QUERYING Stripe (no webhook): the session must be complete, paid, and belong to this
-// space. On success we cache the subscription so later checks don't re-hit Stripe until it expires.
-export async function confirmCheckout(env, space, sessionId) {
-  const s = await sget(env, "/checkout/sessions/" + encodeURIComponent(sessionId) + "?expand[0]=subscription");
+// space. On success we cache the subscription so later checks don't re-charge the card until it expires.
+export async function confirmCheckout(env, charge, space, sessionId) {
+  const s = await get(charge, "/checkout/sessions/" + encodeURIComponent(sessionId) + "?expand[0]=subscription");
   if (s.client_reference_id !== space) return { subscribed: false, reason: "checkout session does not belong to this space" };
   const paid = s.status === "complete" && (s.payment_status === "paid" || s.payment_status === "no_payment_required");
   if (!paid) return { subscribed: false, reason: "payment not complete (" + s.status + "/" + s.payment_status + ")" };
@@ -140,21 +118,21 @@ export async function confirmCheckout(env, space, sessionId) {
 }
 
 // Is this space subscribed right now? Trust the cached record until its period end, then re-query
-// Stripe once and re-cache. No record → not subscribed. (The operator is a customer like anyone
-// else — they subscribe through the same Checkout; there's no free pass.)
-export async function isSubscribed(env, space) {
+// Stripe once (by charging the card) and re-cache. No record → not subscribed. The operator is a
+// customer like anyone else — they subscribe through the same Checkout; there's no free pass.
+export async function isSubscribed(env, charge, space) {
   const rec = await readBilling(env, space);
   if (!rec) return false;
   if (subActive(rec.status) && rec.current_period_end && Date.now() < rec.current_period_end * 1000) return true;
   if (!rec.subscription) return subActive(rec.status);
   try {
-    const sub = await sget(env, "/subscriptions/" + encodeURIComponent(rec.subscription));
+    const sub = await get(charge, "/subscriptions/" + encodeURIComponent(rec.subscription));
     rec.status = sub.status;
     rec.current_period_end = sub.current_period_end;
     rec.updated = Date.now();
     await writeBilling(env, space, rec);
     return subActive(sub.status);
   } catch {
-    return subActive(rec.status); // Stripe unreachable: fall back to the last known status, fail-open for paying customers
+    return subActive(rec.status); // card/Stripe unreachable: fall back to last known status, fail-open for payers
   }
 }

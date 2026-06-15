@@ -22,10 +22,12 @@ GH_CALLBACK_URL = "https://card.thefortthatholds.com/callback"
 WALLET_RPID = "card.thefortthatholds.com"
 WALLET_ORIGIN = "https://card.thefortthatholds.com"
 GH_APP_ID = "4056461"
-# Billing (the worker is the merchant). The $8/mo price + currency live here; the Stripe key is a
-# Worker secret (STRIPE_KEY), set by the deploy workflow. Billing only turns on once STRIPE_KEY is
-# present — a self-host leaving it unset is never gated. The terms-of-service agreement is collected
-# on Stripe's Checkout page (native consent), using the ToS URL set in your Stripe settings.
+# Billing runs THROUGH A CARD, never a raw key. OPERATOR_SPACE is the operator's space; the operator
+# issues one Stripe card there (allowed host api.stripe.com) and the worker does every Stripe call by
+# charging it — the key is injected server-side, never read by billing. Billing stays OFF until that
+# card exists, so this is safe to ship empty: issue the card and the $8/mo door turns on (no redeploy).
+# Freeze the card to stop billing. ToS is Stripe Checkout's native consent (URL set in Stripe settings).
+OPERATOR_SPACE = "github:208725367"
 SUBSCRIPTION_PRICE_CENTS = "800"
 SUBSCRIPTION_CURRENCY = "usd"
 SUBSCRIPTION_PRODUCT_NAME = "Fort Card"
