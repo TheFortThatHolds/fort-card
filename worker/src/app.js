@@ -267,33 +267,27 @@ async function rollover(name){
 function urlB64(b){const pad='='.repeat((4-b.length%4)%4);const s=(b+pad).replace(/-/g,'+').replace(/_/g,'/');const r=atob(s);const u=new Uint8Array(r.length);for(let i=0;i<r.length;i++)u[i]=r.charCodeAt(i);return u}
 async function enablePush(){
   try{
-    if(!('serviceWorker'in navigator)||!('PushManager'in window)){toast('Push not supported here');return}
-    if((await Notification.requestPermission())!=='granted'){toast('Notifications not allowed');return}
+    if(!('serviceWorker'in navigator)){toast('No service worker support');return}
+    if(!('PushManager'in window)){toast('No PushManager support');return}
+    const perm=await Notification.requestPermission();
+    if(perm!=='granted'){toast('Permission: '+perm);return}
     const reg=await navigator.serviceWorker.register('/app/sw.js');
     await navigator.serviceWorker.ready;
+    const old=await reg.pushManager.getSubscription();if(old){await old.unsubscribe().catch(()=>{})}
     const {key}=await jget('/push/key');
-    const sub=(await reg.pushManager.getSubscription())||await reg.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:urlB64(key)});
-    await jget('/push/subscribe',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({subscription:sub.toJSON()})});
-    toast('Notifications on ✓');await refreshPushState()
-  }catch(e){toast('Notif error: '+(e.name||'')+' '+(e.message||''))}
+    const sub=await reg.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:urlB64(key)});
+    const r=await jget('/push/subscribe',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({subscription:sub.toJSON()})});
+    toast('Subscribed ✓ '+(r.id||''));await refreshPushState()
+  }catch(e){toast('Notif FAIL: '+(e.name||'')+' — '+(e.message||e))}
 }
-// reflect the true notification state (granted + subscribed) so the button doesn't lie or persist
+// (debug) keep the control visible + tappable; self-heal the server copy if the browser has one
 async function refreshPushState(){
   try{
-    const card=$('#pushcard');const bar=$('#notifbar');
-    const supported=('Notification'in window)&&('serviceWorker'in navigator)&&('PushManager'in window);
-    if(!supported||Notification.permission==='denied'){if(card)card.classList.add('hide');if(bar)bar.classList.add('hide');return}
+    const card=$('#pushcard');if(card)card.classList.remove('hide');
+    const btn=$('#pushbtn');if(btn){btn.textContent='Turn on notifications';btn.disabled=false}
     const reg=await navigator.serviceWorker.ready.catch(()=>null);
     const sub=reg?await reg.pushManager.getSubscription():null;
-    if(sub){
-      // The browser has a subscription — make sure the SERVER actually has it too. This heals the
-      // "browser subscribed but server has 0" case that left pushes dead and the button hidden.
-      try{await jget('/push/subscribe',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({subscription:sub.toJSON()})});if(card)card.classList.add('hide');if(bar)bar.classList.add('hide')}
-      catch(e){if(card){card.classList.remove('hide');$('#pushbtn').textContent='Fix notifications';$('#pushbtn').disabled=false}}
-      return;
-    }
-    // no browser subscription → show the control to turn it on (errors surface on tap)
-    if(card){card.classList.remove('hide');$('#pushbtn').textContent=Notification.permission==='granted'?'Turn on notifications':'Enable';$('#pushbtn').disabled=false}
+    if(sub){try{await jget('/push/subscribe',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({subscription:sub.toJSON()})})}catch(_){}}
   }catch(_){}
 }
 $('#enroll').onclick=enroll;
