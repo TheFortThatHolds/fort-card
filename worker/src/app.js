@@ -84,12 +84,20 @@ label{font-size:13px;color:#cdc2af;display:block;margin-top:10px}
     <div class="hero" style="text-align:left"><h1>Fort <span class="c">Wallet</span></h1><p class="muted">Credentials issued like cards, not keys. Sign in to your space.</p></div>
     <a class="btn p" href="/login" style="margin-top:20px;display:inline-block">Sign in with GitHub</a>
   </div>
+  <div id="lock" class="hide" style="padding:48px 0;text-align:center">
+    <div class="hero" style="text-align:left"><h1>Fort <span class="c">Wallet</span></h1></div>
+    <p class="muted" style="margin-bottom:18px">Signed in as <b id="lockwho">…</b></p>
+    <button class="btn p" id="unlock" style="font-size:16px;padding:14px 22px">Unlock with your fingerprint</button>
+    <p id="lockmsg" class="muted" style="margin-top:14px"></p>
+    <p class="muted" style="margin:26px auto 0;max-width:460px">Your fingerprint guards this device — it never leaves it. GitHub is your sign-in and your recovery: lose this device, sign back in anywhere and re-enable it, and your vault is right there. You can't be locked out.</p>
+    <a class="muted" href="/logout" style="display:inline-block;margin-top:16px">Sign out</a>
+  </div>
   <div id="app" class="hide">
     <div class="bar"><div class="id">space <b id="who">…</b></div><a class="btn sm" href="/logout">Sign out</a></div>
 
     <h2>This device</h2>
     <div class="card"><div class="row">
-      <div><div id="pkstate" class="muted">Checking passkey…</div><div class="muted">Enable your fingerprint to guard your secrets — it never leaves this device.</div></div>
+      <div><div id="pkstate" class="muted">Checking passkey…</div><div class="muted">Enable your fingerprint to guard your secrets — it never leaves this device. GitHub stays your recovery, so a lost device never locks you out.</div></div>
       <button class="btn" id="enroll">Add passkey</button>
     </div></div>
 
@@ -134,7 +142,12 @@ const b2b=b=>btoa(String.fromCharCode(...new Uint8Array(b))).replace(/\\+/g,'-')
 const s2b=s=>{s=s.replace(/-/g,'+').replace(/_/g,'/');return Uint8Array.from(atob(s+'='.repeat((4-s.length%4)%4)),c=>c.charCodeAt(0))};
 async function jget(p,o){const r=await api(p,o);let j={};try{j=await r.json()}catch{}if(!r.ok)throw new Error(j.error||('HTTP '+r.status));return j}
 
+let me='',hasPk=false;
 function pkmsg(html){$('#pkstate').innerHTML=html}
+function regSW(){if('serviceWorker'in navigator)navigator.serviceWorker.register('/app/sw.js').catch(()=>{})}
+function showApp(){$('#signin').classList.add('hide');$('#lock').classList.add('hide');$('#app').classList.remove('hide');load()}
+function showLock(who){$('#lockwho').textContent=who||me;$('#signin').classList.add('hide');$('#app').classList.add('hide');$('#lock').classList.remove('hide')}
+
 async function enroll(){
   try{
     pkmsg('Starting…');
@@ -144,42 +157,36 @@ async function enroll(){
     pkmsg('Confirm on your device…');
     let c;
     try{c=await navigator.credentials.create({publicKey:o})}
-    catch(err){
-      // The authenticator already holds a passkey for this space — it's added, just re-read it.
-      if(err&&(err.name==='InvalidStateError'||err.name==='NotAllowedError')){await load();return}
-      throw err;
-    }
+    catch(err){if(err&&(err.name==='InvalidStateError'||err.name==='NotAllowedError')){await load();return}throw err}
     pkmsg('Saving…');
     await jget('/passkey/register/finish',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({clientDataJSON:b2b(c.response.clientDataJSON),attestationObject:b2b(c.response.attestationObject),label:'device'})});
     await load();
   }catch(e){pkmsg('<b style="color:#e7857a">Add passkey failed: '+(e.message||e.name||'unknown')+'</b>')}
 }
-// the banking-app tap: prove the human for ONE action, get a one-shot token
-async function stepUp(action){
-  const {publicKey:o}=await jget('/passkey/assert/begin',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action})});
+
+// one fingerprint tap proves presence and unlocks the wallet for this session (GitHub stays underneath)
+async function passkeyAssert(){
+  const {publicKey:o}=await jget('/passkey/assert/begin',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'unlock'})});
   o.challenge=s2b(o.challenge);o.allowCredentials=(o.allowCredentials||[]).map(c=>({...c,id:s2b(c.id)}));
   const c=await navigator.credentials.get({publicKey:o});
-  const r=await jget('/passkey/assert/finish',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:c.id,clientDataJSON:b2b(c.response.clientDataJSON),authenticatorData:b2b(c.response.authenticatorData),signature:b2b(c.response.signature)})});
-  return r.action_token;
+  await jget('/passkey/assert/finish',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:c.id,clientDataJSON:b2b(c.response.clientDataJSON),authenticatorData:b2b(c.response.authenticatorData),signature:b2b(c.response.signature)})});
 }
-async function withTap(action,fn){try{const t=await stepUp(action);await fn(t);load()}catch(e){toast(e.message||'cancelled')}}
+async function unlock(){const m=$('#lockmsg');try{m.textContent='Confirm on your device…';await passkeyAssert();showApp()}catch(e){m.innerHTML='<b style="color:#e7857a">'+(e.message||e.name||'cancelled')+'</b>'}}
 
+// run a sensitive action; the unlock session authorizes it. if it's locked, drop back to the tap.
+async function act(fn){try{await fn();load()}catch(e){const msg=e.message||'';if(msg.indexOf('lock')>=0){if(hasPk){toast('Locked — tap to unlock');showLock(me)}else toast('Enable your fingerprint first — tap Add passkey')}else toast(msg||'failed')}}
+
+const mkbtn=(t,cls)=>{const b=document.createElement('button');b.className='btn sm'+(cls?' '+cls:'');b.textContent=t;return b};
 function cardView(c,pending){
   const lim=c.limit==null?'∞':((c.remaining??0)+'/'+c.limit);
   const el=document.createElement('div');el.className='card'+(pending?' pending':'');
-  el.innerHTML='<div class="row"><div><b>'+c.name+'</b><div class="muted">'+(c.allowed_hosts||[]).join(', ')+' · uses '+lim+'</div></div>'+
-    '<span class="pill '+(pending?'warn':c.frozen?'dead':'')+'">'+(pending?'pending':c.frozen?'frozen':'active')+'</span></div>'+
-    '<div class="btns" style="margin-top:12px"></div>';
+  el.innerHTML='<div class="row"><div><b>'+c.name+'</b><div class="muted">'+(c.allowed_hosts||[]).join(', ')+' · uses '+lim+'</div></div><span class="pill '+(pending?'warn':c.frozen?'dead':'')+'">'+(pending?'pending':c.frozen?'frozen':'active')+'</span></div><div class="btns" style="margin-top:12px"></div>';
   const b=el.querySelector('.btns');
-  if(pending){const a=mkbtn('Approve (tap)','p');a.onclick=()=>withTap('card.approve',t=>jget('/cards/'+c.id+'/freeze',{method:'POST',headers:{'Content-Type':'application/json','X-Fort-Action':t},body:JSON.stringify({frozen:false})}));b.append(a);}
-  else{const f=mkbtn(c.frozen?'Unfreeze (tap)':'Freeze');
-    if(c.frozen)f.onclick=()=>withTap('card.approve',t=>jget('/cards/'+c.id+'/freeze',{method:'POST',headers:{'Content-Type':'application/json','X-Fort-Action':t},body:JSON.stringify({frozen:false})}));
-    else f.onclick=()=>jget('/cards/'+c.id+'/freeze',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({frozen:true})}).then(load);
-    b.append(f);}
-  const rv=mkbtn('Revoke');rv.onclick=()=>{if(confirm('Revoke '+c.name+'?'))jget('/cards/'+c.id,{method:'DELETE'}).then(load)};b.append(rv);
+  if(pending){const a=mkbtn('Approve','p');a.onclick=()=>act(()=>jget('/cards/'+c.id+'/freeze',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({frozen:false})}));b.append(a)}
+  else{const f=mkbtn(c.frozen?'Unfreeze':'Freeze');f.onclick=()=>act(()=>jget('/cards/'+c.id+'/freeze',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({frozen:!c.frozen})}));b.append(f)}
+  const rv=mkbtn('Revoke');rv.onclick=()=>{if(confirm('Revoke '+c.name+'?'))act(()=>jget('/cards/'+c.id,{method:'DELETE'}))};b.append(rv);
   return el;
 }
-const mkbtn=(t,cls)=>{const b=document.createElement('button');b.className='btn sm'+(cls?' '+cls:'');b.textContent=t;return b};
 
 async function load(){
   try{
@@ -189,14 +196,14 @@ async function load(){
     const ce=$('#cards');ce.innerHTML='';if(!live.length)ce.innerHTML='<div class="muted">No cards yet.</div>';else live.forEach(c=>ce.append(cardView(c,false)));
   }catch(e){$('#cards').innerHTML='<div class="muted">'+e.message+'</div>'}
   try{
-    const pk=(await jget('/passkey/list')).passkeys||[];
-    $('#pkstate').innerHTML=pk.length?('<b style="color:#7fae6d">✓ '+pk.length+' passkey'+(pk.length>1?'s':'')+' on file</b>'):'<b style="color:#e7a85a">No passkey — add one</b>';
-    $('#enroll').textContent=pk.length?'Add another':'Add passkey';
+    const pk=(await jget('/passkey/list')).passkeys||[];hasPk=pk.length>0;
+    $('#pkstate').innerHTML=hasPk?('<b style="color:#7fae6d">✓ '+pk.length+' passkey'+(pk.length>1?'s':'')+' on file</b>'):'<b style="color:#e7a85a">No passkey on this device — add one</b>';
+    $('#enroll').textContent=hasPk?'Add another':'Add passkey';
   }catch(e){$('#pkstate').innerHTML='<b style="color:#e7857a">Couldn\\'t read passkeys: '+(e.message||'error')+'</b>'}
   try{
     const ag=(await jget('/agents')).agents||[];const ae=$('#agents');ae.innerHTML='';
     if(!ag.length)ae.innerHTML='<div class="muted">None.</div>';
-    ag.filter(a=>!a.revoked).forEach(a=>{const el=document.createElement('div');el.className='card';el.innerHTML='<div class="row"><div><b>'+a.label+'</b><div class="muted">'+a.id+(a.expires_at?' · expires '+a.expires_at.slice(0,10):'')+'</div></div></div><div class="btns" style="margin-top:10px"></div>';const rv=mkbtn('Revoke');rv.onclick=()=>{if(confirm('Revoke '+a.label+'?'))withTap('agent.revoke',t=>jget('/agents/'+a.id,{method:'DELETE',headers:{'X-Fort-Action':t}}))};el.querySelector('.btns').append(rv);ae.append(el)});
+    ag.filter(a=>!a.revoked).forEach(a=>{const el=document.createElement('div');el.className='card';el.innerHTML='<div class="row"><div><b>'+a.label+'</b><div class="muted">'+a.id+(a.expires_at?' · expires '+a.expires_at.slice(0,10):'')+'</div></div></div><div class="btns" style="margin-top:10px"></div>';const rv=mkbtn('Revoke');rv.onclick=()=>{if(confirm('Revoke '+a.label+'?'))act(()=>jget('/agents/'+a.id,{method:'DELETE'}))};el.querySelector('.btns').append(rv);ae.append(el)});
   }catch(e){$('#agents').innerHTML='<div class="muted">'+e.message+'</div>'}
   try{
     const ev=(await jget('/events?limit=12')).events||[];
@@ -205,13 +212,19 @@ async function load(){
 }
 
 $('#enroll').onclick=enroll;
-$('#issue').onclick=()=>{const hosts=$('#c_hosts').value.split(',').map(s=>s.trim()).filter(Boolean);const lim=$('#c_limit').value;withTap('card.issue',t=>jget('/cards',{method:'POST',headers:{'Content-Type':'application/json','X-Fort-Action':t},body:JSON.stringify({name:$('#c_name').value,secret:$('#c_secret').value,allowed_hosts:hosts,limit:lim?+lim:undefined})}))};
-$('#store').onclick=()=>withTap('secret.store',t=>jget('/secrets',{method:'POST',headers:{'Content-Type':'application/json','X-Fort-Action':t},body:JSON.stringify({name:$('#s_name').value,value:$('#s_val').value})}));
-$('#mint').onclick=async()=>{try{const t=await stepUp('agent.mint');const ttl=$('#a_ttl').value;const r=await jget('/agents',{method:'POST',headers:{'Content-Type':'application/json','X-Fort-Action':t},body:JSON.stringify({label:$('#a_label').value||'agent',ttl_days:ttl?+ttl:undefined})});alert('Bearer (shown ONCE — copy it now):\\n\\n'+r.token);load()}catch(e){toast(e.message||'cancelled')}};
+$('#unlock').onclick=unlock;
+$('#issue').onclick=()=>{const hosts=$('#c_hosts').value.split(',').map(s=>s.trim()).filter(Boolean);const lim=$('#c_limit').value;act(()=>jget('/cards',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:$('#c_name').value,secret:$('#c_secret').value,allowed_hosts:hosts,limit:lim?+lim:undefined})}))};
+$('#store').onclick=()=>act(()=>jget('/secrets',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:$('#s_name').value,value:$('#s_val').value})}));
+$('#mint').onclick=()=>act(async()=>{const ttl=$('#a_ttl').value;const r=await jget('/agents',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({label:$('#a_label').value||'agent',ttl_days:ttl?+ttl:undefined})});alert('Bearer (shown ONCE — copy it now):\\n\\n'+r.token)});
 
 (async()=>{
-  try{const w=await jget('/whoami');$('#who').textContent=(w.login?w.login+' · ':'')+w.space;$('#app').classList.remove('hide');load();}
-  catch{$('#signin').classList.remove('hide');}
-  if('serviceWorker'in navigator)navigator.serviceWorker.register('/app/sw.js').catch(()=>{});
+  let w;try{w=await jget('/whoami')}catch{$('#signin').classList.remove('hide');return regSW()}
+  me=(w.login?w.login+' · ':'')+w.space;$('#who').textContent=me;
+  // GitHub is the floor. If this device has a passkey, a tap opens the wallet (every time).
+  // If it doesn't (new/replacement device), GitHub alone gets you in to enable one — no lockout.
+  let has=false;try{has=((await jget('/passkey/list')).passkeys||[]).length>0}catch{}
+  hasPk=has;
+  if(has)showLock(w.login||w.space);else showApp();
+  regSW();
 })();
 </script></body></html>`;

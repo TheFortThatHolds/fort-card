@@ -6,7 +6,7 @@ const ok = (c, m) => (c ? (pass++, console.log("  ✓ " + m)) : (fail++, console
 
 const html = await handleApp({}, null, null, "/app").text();
 ok(html.includes('id="app"') && html.includes('id="signin"'), "renders the app + sign-in shells");
-ok(html.includes("/passkey/assert/begin") && html.includes("X-Fort-Action"), "wires the passkey step-up + action header");
+ok(html.includes("/passkey/assert/begin") && html.includes('id="lock"'), "wires the unlock-to-open passkey gate");
 ok(html.includes("/login") && html.includes("/whoami"), "wires the OAuth login + whoami");
 
 // the inline browser script must be syntactically valid (parse, don't execute)

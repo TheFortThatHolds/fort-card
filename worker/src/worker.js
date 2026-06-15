@@ -45,8 +45,8 @@
 //   var    `NOTIFY_WEBHOOK`  (optional) URL that gets a JSON POST when an agent requests a card
 //                            (best-effort; the hosted Core fans this out to email + web-push)
 
-import { handleAuth, resolveSession, oauthConfigured } from "./auth.js";
-import { handlePasskey, requireStepUp } from "./webauthn.js";
+import { handleAuth, resolveSession, oauthConfigured, verify, readCookie } from "./auth.js";
+import { handlePasskey } from "./webauthn.js";
 import { resolveAgentBearer, mintAgentBearer, listAgents, revokeAgent } from "./agents.js";
 import { handleApp } from "./app.js";
 
@@ -268,10 +268,19 @@ export default {
     const pkResp = await handlePasskey(env, request, url, path, human ? { space, human, login: session ? session.login : "owner" } : null);
     if (pkResp) return pkResp;
 
-    // Owner acts by an OAuth human (a browser session) demand a FRESH passkey tap, EACH TIME
-    // (DESIGN §3): the route requires an X-Fort-Action step-up token scoped to this act. A self-host
-    // owner presenting FORT_KEY is an API token, not a browser human, so it is not step-up-gated.
-    const stepIfSession = async (action) => (session ? requireStepUp(env, request, space, action) : null);
+    // The auth model: GitHub OAuth is the FLOOR — it signs you in, recovers you on any device, and
+    // lets you enroll a passkey. A fingerprint tap then UNLOCKS the wallet for a short window
+    // (fc_unlock cookie, set on enroll or unlock). Acting requires that unlock — so a browser
+    // session alone can view + enroll, but must tap a fingerprint to act. The passkey is never a
+    // standalone key: it's re-enrollable via OAuth, so losing a device can never lock you out.
+    // (A self-host FORT_KEY caller is an API token, not a browser human — not unlock-gated.)
+    const requireUnlock = async () => {
+      if (!session) return null;
+      const u = await verify(env, readCookie(request, "fc_unlock"));
+      if (u && u.kind === "unlock" && u.space === space) return null;
+      return json({ error: "locked — unlock with your fingerprint", code: "unlock_required" }, 401);
+    };
+    const stepIfSession = async () => requireUnlock();
 
     const body = request.method === "GET" ? {} : await request.json().catch(() => ({}));
 

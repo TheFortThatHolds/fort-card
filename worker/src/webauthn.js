@@ -30,6 +30,13 @@ const json = (o, status = 200) =>
 const CHAL_COOKIE = "fc_chal";
 const CHAL_TTL_SEC = 60 * 5;
 const STEPUP_TTL_SEC = 60 * 2;
+// One fingerprint tap (enroll OR unlock) opens the wallet for this long; then it locks again and
+// asks for the tap once more. GitHub stays the floor underneath — this only gates ACTING.
+const UNLOCK_COOKIE = "fc_unlock";
+const UNLOCK_TTL_SEC = 60 * 30;
+async function unlockCookie(env, space) {
+  return setCookie(UNLOCK_COOKIE, await sign(env, { space, kind: "unlock", exp: Date.now() + UNLOCK_TTL_SEC * 1000 }), UNLOCK_TTL_SEC);
+}
 
 async function sha256(bytes) {
   return new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
@@ -232,10 +239,11 @@ export async function handlePasskey(env, request, url, path, auth) {
       const record = { credId, jwk, alg, signCount: authData.signCount, label: body.label || "passkey", created: new Date().toISOString() };
       await env.VAULT.put(passkeyKey(space, credId), JSON.stringify(record));
       await addToIndex(env, space, { credId, label: record.label, created: record.created });
-      return new Response(JSON.stringify({ ok: true, credId, label: record.label }), {
-        status: 200,
-        headers: { "Content-Type": "application/json", "Set-Cookie": setCookie(CHAL_COOKIE, "", 0) },
-      });
+      // Just enabled a fingerprint on this device = present = unlock the session too.
+      const headers = new Headers({ "Content-Type": "application/json" });
+      headers.append("Set-Cookie", setCookie(CHAL_COOKIE, "", 0));
+      headers.append("Set-Cookie", await unlockCookie(env, space));
+      return new Response(JSON.stringify({ ok: true, credId, label: record.label, unlocked: true }), { status: 200, headers });
     } catch (e) {
       return json({ error: "registration failed: " + (e.message || "invalid") }, 400);
     }
@@ -287,11 +295,13 @@ export async function handlePasskey(env, request, url, path, auth) {
       if (!ok) throw new Error("bad signature");
       rec.signCount = parsed.signCount;
       await env.VAULT.put(passkeyKey(space, credId), JSON.stringify(rec));
+      // A fingerprint tap opens the wallet for this session (the per-action step-up token is kept
+      // for callers that want one, but the unlock cookie is what gates acting).
       const actionToken = await sign(env, { space, action: claim.action, jti: crypto.randomUUID(), exp: Date.now() + STEPUP_TTL_SEC * 1000 });
-      return new Response(JSON.stringify({ ok: true, action: claim.action, action_token: actionToken, expires_in: STEPUP_TTL_SEC }), {
-        status: 200,
-        headers: { "Content-Type": "application/json", "Set-Cookie": setCookie(CHAL_COOKIE, "", 0) },
-      });
+      const headers = new Headers({ "Content-Type": "application/json" });
+      headers.append("Set-Cookie", setCookie(CHAL_COOKIE, "", 0));
+      headers.append("Set-Cookie", await unlockCookie(env, space));
+      return new Response(JSON.stringify({ ok: true, action: claim.action, action_token: actionToken, unlocked: true, expires_in: UNLOCK_TTL_SEC }), { status: 200, headers });
     } catch (e) {
       return json({ error: "assertion failed: " + (e.message || "invalid") }, 400);
     }
