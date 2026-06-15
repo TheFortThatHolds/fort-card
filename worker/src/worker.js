@@ -59,7 +59,7 @@ import { resolveAgentBearer, mintAgentBearer, listAgents, revokeAgent } from "./
 import { handleApp } from "./app.js";
 import { pushToOwner, addSubscription, removeSubscription, vapidPublicKey, listSubscriptions } from "./push.js";
 import { postComment, appConfigured, getInstallationOwner } from "./github-app.js";
-import { billingEnabled, isSubscribed, createCheckout, confirmCheckout, recordConsent, priceCents, tosUrl } from "./stripe.js";
+import { billingEnabled, isSubscribed, createCheckout, confirmCheckout, priceCents } from "./stripe.js";
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
@@ -460,15 +460,14 @@ export default {
     // ── billing routes (session tenants). status is always safe to read; subscribe needs the
     // customer to accept the terms; confirm verifies the Checkout return by querying Stripe. ──
     if (path === "/billing/status" && request.method === "GET") {
-      return json({ enabled: billingEnabled(env), subscribed, price_cents: priceCents(env), tos_url: tosUrl(env) });
+      return json({ enabled: billingEnabled(env), subscribed, price_cents: priceCents(env) });
     }
     if (path === "/billing/subscribe" && request.method === "POST") {
       if (!session) return json({ error: "sign in to subscribe" }, 401);
       if (!billingEnabled(env)) return json({ error: "billing is not enabled on this instance" }, 400);
       if (subscribed) return json({ ok: true, already_subscribed: true });
-      if (body.tos_accept !== true) return json({ error: "you must accept the terms to subscribe", tos_url: tosUrl(env) }, 400);
-      await recordConsent(env, space, tosUrl(env));
-      await logEvent(env, space, "billing.consent", { tos_url: tosUrl(env) });
+      // The terms agreement is collected on Stripe's Checkout page (native ToS consent) — no app-side
+      // checkbox. Subscribe just opens Checkout, where Stripe shows the agreement before payment.
       try {
         const { url: checkoutUrl, id } = await createCheckout(env, space, url.origin);
         await logEvent(env, space, "billing.checkout", { session: id });

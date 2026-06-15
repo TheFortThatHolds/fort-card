@@ -3,6 +3,9 @@
 // open Checkout sessions, and confirm payment by QUERYING Stripe. No webhook, no hand-built buy
 // button, no dashboard scavenger hunt. The operator pastes one key; the worker does the rest.
 //
+// The customer agrees to the operator's terms via Stripe Checkout's native ToS consent — the
+// agreement checkbox lives on Stripe's page, using the ToS URL set in the operator's Stripe settings.
+//
 // Binary, by design: a space is subscribed or it isn't — no tiers. Gated AT THE DOOR (after
 // sign-in, before any wallet use): an unsubscribed space can view its (empty) wallet and subscribe,
 // but can't store, issue, charge, or let an agent use it. Self-host leaves STRIPE_KEY unset → billing
@@ -14,8 +17,6 @@
 //   var    SUBSCRIPTION_PRICE_CENTS  (optional) monthly price in cents — default 800 ($8)
 //   var    SUBSCRIPTION_CURRENCY     (optional) ISO currency — default "usd"
 //   var    SUBSCRIPTION_PRODUCT_NAME (optional) the product's display name — default "Fort Card"
-//   var    TOS_URL                   (optional) the terms the customer must accept at checkout
-//                                    — default https://thefortthatholds.xyz/legal.html
 //   var    OPERATOR_SPACE            (optional) a space comped as always-subscribed (e.g. the operator's
 //                                    own space) — leave unset to make everyone, including you, pay.
 
@@ -25,9 +26,6 @@ export function billingEnabled(env) {
 export function priceCents(env) {
   const n = parseInt(env.SUBSCRIPTION_PRICE_CENTS || "800", 10);
   return Number.isInteger(n) && n > 0 ? n : 800;
-}
-export function tosUrl(env) {
-  return env.TOS_URL || "https://thefortthatholds.xyz/legal.html";
 }
 // A subscription counts as live during a transient payment retry (past_due) too, so a single failed
 // charge never instantly locks a paying customer out — Stripe escalates to canceled/unpaid on its own.
@@ -104,6 +102,10 @@ export async function createCheckout(env, space, origin) {
     cancel_url: origin + "/app?billing=cancel",
     client_reference_id: space,
     allow_promotion_codes: true,
+    // Stripe Checkout's native ToS agreement: it renders the "I agree to the Terms of Service"
+    // checkbox on Stripe's own page, using the ToS URL configured in the operator's Stripe settings.
+    // No app-side checkbox, no ToS link in our code — it's an option on the checkout itself.
+    consent_collection: { terms_of_service: "required" },
     metadata: { space },
     subscription_data: { metadata: { space } },
   });
@@ -129,14 +131,6 @@ export async function confirmCheckout(env, space, sessionId) {
   };
   await writeBilling(env, space, rec);
   return { subscribed: true, ...rec };
-}
-
-// Record the customer's terms-of-service acceptance against their space (merged into the billing
-// record). Captured the moment they hit Subscribe, before the redirect to Stripe.
-export async function recordConsent(env, space, url) {
-  const rec = (await readBilling(env, space)) || {};
-  rec.tos = { url, accepted_at: new Date().toISOString() };
-  await writeBilling(env, space, rec);
 }
 
 // Is this space subscribed right now? OPERATOR_SPACE is comped. Otherwise trust the cached record

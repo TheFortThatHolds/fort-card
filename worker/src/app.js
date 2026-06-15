@@ -119,11 +119,8 @@ label{font-size:13px;color:#cdc2af;display:block;margin-top:10px}
     <div class="card" style="margin-top:18px">
       <div class="row"><b style="font-size:18px">Subscription</b><span class="pill warn" id="gateprice">$8 / month</span></div>
       <p class="muted" style="margin-top:10px">Your own sealed vault: store keys, issue capped cards, approve agent requests from your phone. One price, everything in. Cancel anytime.</p>
-      <label style="display:flex;gap:10px;align-items:flex-start;margin-top:16px;cursor:pointer">
-        <input type="checkbox" id="tos" style="width:auto;margin-top:3px">
-        <span class="muted">I have read and agree to the <a id="toslink" href="#" target="_blank" rel="noopener">Terms of Service</a>.</span>
-      </label>
       <button class="btn p" id="subbtn" style="margin-top:16px;width:100%;font-size:16px;padding:14px">Subscribe</button>
+      <p class="muted" style="margin-top:10px">You'll review and accept the terms on the secure checkout page.</p>
       <p id="gatemsg" class="muted" style="margin-top:12px"></p>
     </div>
     <a class="muted" href="/logout" style="display:inline-block;margin-top:16px">Sign out</a>
@@ -323,15 +320,13 @@ async function refreshPushState(){
 function showGate(bill){
   $('#gatewho').textContent=me;
   $('#gateprice').textContent='$'+((bill.price_cents||800)/100).toFixed(0).replace(/\\.0$/,'')+' / month';
-  $('#toslink').href=bill.tos_url||'#';
   $('#signin').classList.add('hide');$('#lock').classList.add('hide');$('#app').classList.add('hide');
   $('#gate').classList.remove('hide');
 }
 $('#subbtn')&&($('#subbtn').onclick=async()=>{
   const m=$('#gatemsg');
-  if(!$('#tos').checked){m.innerHTML='<b style="color:#e7a85a">Please accept the terms to continue.</b>';return}
   $('#subbtn').disabled=true;m.textContent='Opening secure checkout…';
-  try{const r=await jget('/billing/subscribe',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({tos_accept:true})});
+  try{const r=await jget('/billing/subscribe',{method:'POST',headers:{'Content-Type':'application/json'}});
     if(r.url)location.href=r.url;else{m.innerHTML='<b style="color:#e7857a">No checkout URL returned.</b>';$('#subbtn').disabled=false}
   }catch(e){m.innerHTML='<b style="color:#e7857a">'+(e.message||'failed')+'</b>';$('#subbtn').disabled=false}
 });

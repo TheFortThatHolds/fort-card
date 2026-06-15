@@ -2,8 +2,8 @@
 // price/tos resolution) and the network paths (ensure/checkout/confirm/isSubscribed) against a
 // stubbed global fetch + an in-memory KV. No real Stripe. Run: node test/stripe.test.mjs
 import {
-  billingEnabled, priceCents, tosUrl, subActive, formEncode,
-  ensurePrice, createCheckout, confirmCheckout, isSubscribed, recordConsent,
+  billingEnabled, priceCents, subActive, formEncode,
+  ensurePrice, createCheckout, confirmCheckout, isSubscribed,
 } from "../src/stripe.js";
 
 let pass = 0, fail = 0;
@@ -19,8 +19,6 @@ const kv = () => {
 ok(billingEnabled({ STRIPE_KEY: "sk_test" }) && !billingEnabled({}), "billing on iff STRIPE_KEY set");
 ok(priceCents({}) === 800 && priceCents({ SUBSCRIPTION_PRICE_CENTS: "500" }) === 500, "price defaults to 800, overridable");
 ok(priceCents({ SUBSCRIPTION_PRICE_CENTS: "junk" }) === 800, "bad price falls back to 800");
-ok(tosUrl({}).includes("thefortthatholds.xyz/legal.html"), "tos url defaults to the store legal page");
-ok(tosUrl({ TOS_URL: "https://x/y" }) === "https://x/y", "tos url is overridable");
 ok(subActive("active") && subActive("trialing") && subActive("past_due") && !subActive("canceled"), "subActive is binary on Stripe status");
 
 const fe = formEncode({ mode: "subscription", line_items: [{ price: "price_1", quantity: 1 }], subscription_data: { metadata: { space: "github:7" } } });
@@ -66,6 +64,7 @@ const realFetch = globalThis.fetch;
   ok(out.url === "https://checkout.stripe.com/c/cs_1", "createCheckout returns the Checkout URL");
   ok(co.body.includes("client_reference_id=github%3A7"), "checkout binds the space (client_reference_id)");
   ok(co.body.includes("mode=subscription"), "checkout is a subscription");
+  ok(decodeURIComponent(co.body).includes("consent_collection[terms_of_service]=required"), "checkout uses Stripe's native ToS consent");
 }
 
 // confirmCheckout: only a complete+paid session for THIS space subscribes; caches the subscription
@@ -99,14 +98,6 @@ const realFetch = globalThis.fetch;
   await env.VAULT.put("github:3:billing", JSON.stringify({ subscription: "sub_3", status: "active", current_period_end: Math.floor(Date.now() / 1000) - 10 }));
   globalThis.fetch = stub([[/\/subscriptions\//, { status: "canceled" }]]);
   ok(!(await isSubscribed(env, "github:3")), "expired cache re-queries Stripe and sees the cancellation");
-}
-
-// recordConsent: stamps the ToS acceptance onto the billing record
-{
-  const env = { VAULT: kv() };
-  await recordConsent(env, "github:7", "https://t/os");
-  const rec = JSON.parse(await env.VAULT.get("github:7:billing"));
-  ok(rec.tos && rec.tos.url === "https://t/os" && rec.tos.accepted_at, "recordConsent stamps url + timestamp");
 }
 
 globalThis.fetch = realFetch;
