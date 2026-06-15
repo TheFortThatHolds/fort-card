@@ -15,7 +15,11 @@ let parsed = true;
 try { new Function(script); } catch (e) { parsed = false; console.error("    " + e.message); }
 ok(parsed, "inline browser JS parses");
 
-ok(!!handleApp({}, null, null, "/app/manifest.webmanifest"), "serves the manifest");
+const mani = JSON.parse(await handleApp({}, null, null, "/app/manifest.webmanifest").text());
+ok(mani.icons.every((i) => i.type === "image/png" && /icon-\d+\.png/.test(i.src)), "manifest icons are real PNGs (installable)");
+const i192 = handleApp({}, null, null, "/app/icon-192.png");
+ok(i192 && i192.headers.get("Content-Type") === "image/png", "serves the 192 PNG icon");
+ok(!!handleApp({}, null, null, "/app/icon-512.png"), "serves the 512 PNG icon");
 ok(!!handleApp({}, null, null, "/app/sw.js"), "serves the service worker");
 ok(handleApp({}, null, null, "/cards") === null, "passes non-app routes through");
 
