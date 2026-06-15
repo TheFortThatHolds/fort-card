@@ -17,7 +17,7 @@
 //
 // Routes (added to the worker):
 //   GET /login            → 302 to GitHub authorize (sets a signed, short-lived `state` cookie)
-//   GET /callback         → verify state, exchange code, read immutable id, mint session, → /admin
+//   GET /callback         → verify state, exchange code, read immutable id, mint session, → /app
 //   GET /logout           → clear the session cookie
 //   GET /whoami           → { login, space } for the current session, or 401
 //
@@ -167,7 +167,7 @@ export async function handleAuth(request, env, url, path) {
     const headers = new Headers();
     headers.append("Set-Cookie", setCookie(SESSION_COOKIE, session, SESSION_TTL_SEC));
     headers.append("Set-Cookie", setCookie(STATE_COOKIE, "", 0));
-    headers.set("Location", "/admin");
+    headers.set("Location", "/app");
     return new Response(null, { status: 302, headers });
   }
 
