@@ -50,6 +50,7 @@ import { handlePasskey } from "./webauthn.js";
 import { resolveAgentBearer, mintAgentBearer, listAgents, revokeAgent } from "./agents.js";
 import { handleApp } from "./app.js";
 import { pushToOwner, addSubscription, removeSubscription, vapidPublicKey } from "./push.js";
+import { postComment, appConfigured } from "./github-app.js";
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
@@ -211,25 +212,22 @@ async function notifyCardRequest(env, space, card) {
 
 // ── the WAKE-BACK (DESIGN §8): when the owner approves a pending card, post a comment to the
 // REQUESTER's own repo/PR — never the public fort-card repo — so the agent's subscribed session
-// wakes and resumes immediately. Best-effort; the approval itself never blocks on it. The posting
-// credential (GITHUB_WAKE_TOKEN) should be a scoped connector — its own GitHub App install token
-// or a Fort Card — never a broad PAT. Unset = the push already notified the human; no auto-wake. ──
+// wakes and resumes immediately. The write permission comes from the ONE Fort Wallet GitHub App
+// being INSTALLED on that repo by its owner (an install token, scoped to consented repos) — no
+// operator PAT, no per-customer app. App unset / not installed there = the push already notified
+// the human; no auto-wake. Best-effort; the approval itself never blocks on it. ──
 async function wakeRequester(env, space, card) {
   const w = card.wake;
   if (!w || !w.repo || !w.pr) return;
-  if (!env.GITHUB_WAKE_TOKEN) {
-    await logEvent(env, space, "card.wake_skip", { id: card.id, reason: "no GITHUB_WAKE_TOKEN configured" });
+  if (!appConfigured(env)) {
+    await logEvent(env, space, "card.wake_skip", { id: card.id, reason: "GitHub App not configured (GH_APP_ID/GH_APP_PRIVATE_KEY)" });
     return;
   }
   try {
-    await fetch(`https://api.github.com/repos/${w.repo}/issues/${w.pr}/comments`, {
-      method: "POST",
-      headers: { Authorization: "Bearer " + env.GITHUB_WAKE_TOKEN, "User-Agent": "fort-card", Accept: "application/vnd.github+json", "Content-Type": "application/json" },
-      body: JSON.stringify({ body: `✅ **Fort Card approved** — \`${card.name}\` (card \`${card.id}\`) is now active. Resume.` }),
-    });
-    await logEvent(env, space, "card.wake", { id: card.id, repo: w.repo, pr: w.pr });
-  } catch {
-    /* best-effort; never block approval on the wake-back */
+    const ok = await postComment(env, w.repo, w.pr, `✅ **Fort Card approved** — \`${card.name}\` (card \`${card.id}\`) is now active. Resume.`);
+    await logEvent(env, space, ok ? "card.wake" : "card.wake_skip", { id: card.id, repo: w.repo, pr: w.pr, reason: ok ? undefined : "app not installed on that repo" });
+  } catch (e) {
+    await logEvent(env, space, "card.wake_skip", { id: card.id, repo: w.repo, reason: (e && e.message) || "wake failed" });
   }
 }
 
