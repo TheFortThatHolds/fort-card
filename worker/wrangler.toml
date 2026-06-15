@@ -1,39 +1,22 @@
 name = "fort-card"
 main = "src/worker.js"
 compatibility_date = "2026-06-01"
-# Preserve vars + secrets set in the Cloudflare dashboard across deploys, so a push never wipes
-# this instance's GH_CLIENT_ID / GH_CLIENT_SECRET / MASTER_KEY / etc. They live on the Worker, not
-# in this public template.
+# Keep secrets/vars set on the Worker across deploys (a redeploy never wipes MASTER_KEY etc).
 keep_vars = true
 
-# 1. Create a KV namespace and paste its id here:
-#      npx wrangler kv namespace create VAULT
+# The vault.
+#  • Deploy-button self-host: Cloudflare provisions a fresh namespace and binds it here.
+#  • Operator's managed deploy: the GitHub Actions workflow swaps the real id into the placeholder.
 kv_namespaces = [
   { binding = "VAULT", id = "PASTE_YOUR_KV_NAMESPACE_ID_HERE" }
 ]
 
-# 2. Set the secrets (NEVER commit these):
-#      npx wrangler secret put FORT_KEY        # owner bearer token you choose
-#      npx wrangler secret put MASTER_KEY      # base64 of 32 random bytes:  openssl rand -base64 32
+# ── No domain route and no identity [vars] live in this template ON PURPOSE. ──
+# This is what the "Deploy to Cloudflare" button deploys: a stranger gets a working vault on
+# their own *.workers.dev in single-token mode — set MASTER_KEY + FORT_KEY (see .dev.vars.example)
+# and it runs. OAuth login and $8/mo billing stay off until they wire up their own GitHub App.
 #
-#    Optional — turn on human-in-the-loop so an agent's cards land PENDING until you approve:
-#      npx wrangler secret put FORT_AGENT_KEY  # the token you hand to agents
-#
-# 3. (optional) Get notified when an agent requests a card — set a webhook URL:
-#      [vars]
-#      NOTIFY_WEBHOOK = "https://your-endpoint.example.com/fort-card"
-#
-# 4. Deploy:
-#      npx wrangler deploy
-#
-# ── SaaS mode (multi-tenant): turn on GitHub-App login so each verified identity gets its own
-#    space (`github:<id>`). A pure self-host can skip all of this and just use FORT_KEY.
-#      npx wrangler secret put GH_CLIENT_SECRET   # the Fort Wallet GitHub App's client secret
-#      npx wrangler secret put SESSION_SECRET     # (optional) cookie-signing key; self-mints if unset
-#    [vars]
-#    GH_CLIENT_ID  = "Iv1.xxxxxxxxxxxx"                              # the App's client id
-#    GH_CALLBACK_URL = "https://card.thefortthatholds.com/callback" # EXACT, must match the App
-#    WALLET_RPID   = "card.thefortthatholds.com"                    # passkey relying-party id (host)
-#    WALLET_ORIGIN = "https://card.thefortthatholds.com"            # passkey origin (scheme+host)
-#    # (WALLET_RPID/ORIGIN default to the request host/origin if unset — pin them in prod.)
-#    CORE_ORIGIN   = "https://fort.thefortthatholds.com"            # lets Fort Core frame /app as the plugin
+# The operator's managed (hosted) instance is NOT configured here — its domain,
+# GitHub App, and billing are injected at deploy time by .github/workflows/deploy.yml, sourced from
+# repo Actions Variables (with the operator's current values as fallback). So this file stays a clean
+# template and production comes out identical.

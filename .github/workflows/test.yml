@@ -29,3 +29,9 @@ jobs:
         run: node test/ssrf.test.mjs
       - name: Wallet app render
         run: node test/app.test.mjs
+      - name: Web Push module
+        run: node test/push.test.mjs
+      - name: GitHub App JWT
+        run: node test/github-app.test.mjs
+      - name: Stripe billing
+        run: node test/stripe.test.mjs

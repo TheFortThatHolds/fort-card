@@ -8,9 +8,14 @@ name: deploy
 #   CLOUDFLARE_API_TOKEN   use Cloudflare's "Edit Cloudflare Workers" token template + your zone
 #   CLOUDFLARE_ACCOUNT_ID  Cloudflare dashboard, right sidebar
 #   GH_CLIENT_SECRET       the GitHub App's client secret
-# Variables (Settings → Actions → Variables):
+# Variables (Settings → Actions → Variables) — all optional; each falls back to the operator's
+# current value so a deploy works with none of them set:
 #   GH_CLIENT_ID           the GitHub App's client id (Iv23…)
 #   WALLET_DOMAIN          e.g. card.example.com  (callback/rpid/origin are derived from it)
+#   GH_APP_ID              the wake-back GitHub App's numeric id
+#   OPERATOR_SPACE         the billing space, e.g. github:<id>
+# Subscriptions turn on with NO key here: with OPERATOR_SPACE set, issue ONE Stripe card in that
+# space's wallet (allowed host api.stripe.com) and the worker bills by charging that card.
 
 on:
   push:
@@ -47,20 +52,48 @@ jobs:
           sed -i "s|PASTE_YOUR_KV_NAMESPACE_ID_HERE|$id|" wrangler.toml
           echo "KV namespace bound."
 
-      - name: Bind the custom domain
-        if: ${{ vars.WALLET_DOMAIN != '' }}
-        run: echo "routes = [ { pattern = \"${{ vars.WALLET_DOMAIN }}\", custom_domain = true } ]" >> wrangler.toml
-
-      - name: Deploy (with this instance's identity config)
+      - name: Inject operator instance config (domain + GitHub App + billing)
+        # The committed wrangler.toml is a clean self-host template (no domain, no identity vars) so
+        # the "Deploy to Cloudflare" button works for strangers. Here we append the operator's managed
+        # config for the hosted instance. Every value comes from a repo Actions Variable — NONE of the
+        # operator's data lives in the repo. If a required Variable is missing we FAIL the deploy (the
+        # running Worker keeps serving) rather than ship a broken config.
         env:
-          GH_CLIENT_ID: ${{ vars.GH_CLIENT_ID }}
-          WALLET_DOMAIN: ${{ vars.WALLET_DOMAIN }}
+          DOMAIN: ${{ vars.WALLET_DOMAIN }}
+          CLIENT_ID: ${{ vars.GH_CLIENT_ID }}
+          APP_ID: ${{ vars.GH_APP_ID }}
+          OP_SPACE: ${{ vars.OPERATOR_SPACE }}
         run: |
-          $WR deploy \
-            --var GH_CLIENT_ID:"$GH_CLIENT_ID" \
-            --var GH_CALLBACK_URL:"https://$WALLET_DOMAIN/callback" \
-            --var WALLET_RPID:"$WALLET_DOMAIN" \
-            --var WALLET_ORIGIN:"https://$WALLET_DOMAIN"
+          set -e
+          missing=
+          for v in DOMAIN CLIENT_ID APP_ID OP_SPACE; do
+            [ -n "${!v}" ] || missing="$missing $v"
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::Missing required Actions Variable(s):$missing — set WALLET_DOMAIN, GH_CLIENT_ID, GH_APP_ID, OPERATOR_SPACE (Settings → Secrets and variables → Actions → Variables). Aborting; the live Worker is untouched."
+            exit 1
+          fi
+          {
+            echo ""
+            echo "# ── injected at deploy for the operator's managed instance (not in the committed template) ──"
+            echo "routes = ["
+            echo "  { pattern = \"$DOMAIN\", custom_domain = true }"
+            echo "]"
+            echo "[vars]"
+            echo "GH_CLIENT_ID = \"$CLIENT_ID\""
+            echo "GH_CALLBACK_URL = \"https://$DOMAIN/callback\""
+            echo "WALLET_RPID = \"$DOMAIN\""
+            echo "WALLET_ORIGIN = \"https://$DOMAIN\""
+            echo "GH_APP_ID = \"$APP_ID\""
+            echo "OPERATOR_SPACE = \"$OP_SPACE\""
+            echo "SUBSCRIPTION_PRICE_CENTS = \"800\""
+            echo "SUBSCRIPTION_CURRENCY = \"usd\""
+            echo "SUBSCRIPTION_PRODUCT_NAME = \"Fort Card\""
+          } >> wrangler.toml
+          echo "Operator instance config injected for $DOMAIN."
+
+      - name: Deploy
+        run: $WR deploy
 
       - name: Set GH_CLIENT_SECRET (from repo secret; masked, never logged)
         env:
@@ -70,6 +103,16 @@ jobs:
             printf '%s' "$SECRET" | $WR secret put GH_CLIENT_SECRET
           else
             echo "GH_CLIENT_SECRET not set yet — skipping (login stays off until it is)."
+          fi
+
+      - name: Set GH_APP_PRIVATE_KEY (from repo secret; masked, never logged — the wake-back app key)
+        env:
+          SECRET: ${{ secrets.GH_APP_PRIVATE_KEY }}
+        run: |
+          if [ -n "$SECRET" ]; then
+            printf '%s' "$SECRET" | $WR secret put GH_APP_PRIVATE_KEY
+          else
+            echo "GH_APP_PRIVATE_KEY not set yet — skipping (wake-back stays off until it is)."
           fi
 
       - name: Mint MASTER_KEY once if absent (random, on the runner; a Worker secret, never KV)

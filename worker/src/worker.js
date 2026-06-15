@@ -44,11 +44,24 @@
 //   var    `FORT_SPACE`      (optional) the space for the owner/agent token (default "owner")
 //   var    `NOTIFY_WEBHOOK`  (optional) URL that gets a JSON POST when an agent requests a card
 //                            (best-effort; the hosted Core fans this out to email + web-push)
+//   var    `OPERATOR_SPACE`  (optional) turns on SUBSCRIPTIONS. The operator issues ONE Stripe card
+//                            in this space's wallet (allowed host api.stripe.com, pointed at their
+//                            Stripe secret). The worker does ALL Stripe work by CHARGING that card —
+//                            it never reads the key. Creates its own product/price/checkout, confirms
+//                            by querying Stripe (no webhook, no dashboard button, no key in the repo).
+//                            Freeze the card → billing stops. No card issued = billing off.
+//
+// Monetization is binary and AT THE DOOR: when STRIPE_KEY is set, an OAuth tenant must hold an
+// active subscription before any wallet USE (store/issue/charge/approve/mint). They can still sign
+// in, see their empty space, and subscribe. Self-host (FORT_KEY) and agent tokens are never gated.
 
-import { handleAuth, resolveSession, oauthConfigured } from "./auth.js";
-import { handlePasskey, requireStepUp } from "./webauthn.js";
+import { handleAuth, resolveSession, oauthConfigured, verify, readCookie } from "./auth.js";
+import { handlePasskey } from "./webauthn.js";
 import { resolveAgentBearer, mintAgentBearer, listAgents, revokeAgent } from "./agents.js";
 import { handleApp } from "./app.js";
+import { pushToOwner, addSubscription, removeSubscription, vapidPublicKey, listSubscriptions } from "./push.js";
+import { postComment, appConfigured, getInstallationOwner } from "./github-app.js";
+import { isSubscribed, createCheckout, confirmCheckout, priceCents } from "./stripe.js";
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
@@ -183,9 +196,16 @@ async function wrappedDEKFor(env, space, keyRef) {
 }
 
 // best-effort owner notification when an agent requests a card; never blocks issuance.
-async function notifyCardRequest(env, card) {
-  if (!env.NOTIFY_WEBHOOK) return;
+// Two channels: a Web Push to the owner's installed wallet (so it buzzes), and the optional
+// NOTIFY_WEBHOOK relay. Both are wrapped so a failure never blocks the request landing.
+async function notifyCardRequest(env, space, card) {
   const limit = card.limit != null ? String(card.limit) : "unlimited";
+  await pushToOwner(env, space, {
+    title: "Fort Card approval needed",
+    body: `${card.name} → ${card.allowed_hosts.join(", ")} (limit ${limit}). Tap to approve.`,
+    url: "/app",
+  });
+  if (!env.NOTIFY_WEBHOOK) return;
   try {
     await fetch(env.NOTIFY_WEBHOOK, {
       method: "POST",
@@ -198,6 +218,27 @@ async function notifyCardRequest(env, card) {
     });
   } catch {
     /* never block card creation on a notification */
+  }
+}
+
+// ── the WAKE-BACK (DESIGN §8): when the owner approves a pending card, post a comment to the
+// REQUESTER's own repo/PR — never the public fort-card repo — so the agent's subscribed session
+// wakes and resumes immediately. The write permission comes from the ONE Fort Wallet GitHub App
+// being INSTALLED on that repo by its owner (an install token, scoped to consented repos) — no
+// operator PAT, no per-customer app. App unset / not installed there = the push already notified
+// the human; no auto-wake. Best-effort; the approval itself never blocks on it. ──
+async function wakeRequester(env, space, card) {
+  const w = card.wake;
+  if (!w || !w.repo || !w.pr) return;
+  if (!appConfigured(env)) {
+    await logEvent(env, space, "card.wake_skip", { id: card.id, reason: "GitHub App not configured (GH_APP_ID/GH_APP_PRIVATE_KEY)" });
+    return;
+  }
+  try {
+    const ok = await postComment(env, w.repo, w.pr, `✅ **Fort Card approved** — \`${card.name}\` (card \`${card.id}\`) is now active. Resume.`);
+    await logEvent(env, space, ok ? "card.wake" : "card.wake_skip", { id: card.id, repo: w.repo, pr: w.pr, reason: ok ? undefined : "app not installed on that repo" });
+  } catch (e) {
+    await logEvent(env, space, "card.wake_skip", { id: card.id, repo: w.repo, reason: (e && e.message) || "wake failed" });
   }
 }
 
@@ -219,6 +260,68 @@ export function ssrfBlocked(host) {
     if (a === 100 && b >= 64 && b <= 127) return true; // carrier-grade NAT
   }
   return false;
+}
+
+// ── BILLING RUNS THROUGH A CARD, never a raw key. The operator issues ONE Stripe card in their
+// wallet (allowed host api.stripe.com, pointed at their Stripe secret). We find it and hand stripe.js
+// a `charge` that runs each Stripe call by charging THAT card — the key is injected server-side and
+// only the response comes back. No raw key is ever read by billing, nothing is load-bearing, and
+// freezing the card stops all billing. Returns null (billing off) until the card exists. ──
+async function billingCard(env) {
+  if (!env.OPERATOR_SPACE) return null;
+  const list = await env.VAULT.list({ prefix: K(env.OPERATOR_SPACE, "card", "") });
+  for (const k of list.keys) {
+    const c = JSON.parse(await env.VAULT.get(k.name));
+    if (!c.pending && !c.frozen && (c.allowed_hosts || []).includes("api.stripe.com")) return c;
+  }
+  return null;
+}
+// build the `charge(request)` stripe.js calls: settle through the card; a decline becomes an error.
+function stripeCharger(env, card) {
+  return async (req) => {
+    const out = await chargeCard(env, env.OPERATOR_SPACE, card, req);
+    if (!out.authorized) throw new Error("Stripe billing card declined: " + out.decline_reason);
+    return { status: out.status, body: out.body };
+  };
+}
+
+async function sha256hex(s) {
+  const d = new Uint8Array(await crypto.subtle.digest("SHA-256", enc.encode(String(s))));
+  return [...d].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+// ── charge a card in a space (the settle path, factored so /cards/:id/use and the agent path share
+// it): run the rules, inject the key server-side, return only the response. Mutates used + logs. ──
+async function chargeCard(env, space, card, req) {
+  const decline = async (reason) => { await logEvent(env, space, "card.decline", { id: card.id, reason }); return { authorized: false, decline_reason: reason }; };
+  if (card.pending) return decline("card pending owner approval");
+  if (card.frozen) return decline("card frozen");
+  if (card.expires_at && Date.parse(card.expires_at) < Date.now()) return decline("card expired");
+  if (card.limit != null && card.used >= card.limit) return decline("limit reached");
+  if (!req || !req.url) return decline("request url required");
+  let host;
+  try { host = new URL(req.url).host; } catch { return decline("bad url"); }
+  if (ssrfBlocked(host)) return decline(`host ${host} blocked (SSRF)`);
+  if (!card.allowed_hosts.includes(host)) return decline(`host ${host} not allowed for this card`);
+  const secRaw = await env.VAULT.get(K(space, "secret", card.secret));
+  if (!secRaw) return decline("secret missing from vault");
+  const sealed = JSON.parse(secRaw);
+  let resp, out;
+  if (splitMode(env)) {
+    const r = await callLastMile(env, "/charge", { secret: sealed, dek: await wrappedDEKFor(env, space, sealed.keyRef), header: card.header, header_prefix: card.header_prefix, request: { url: req.url, method: req.method || "GET", headers: req.headers || {}, body: req.body } });
+    resp = { status: r.status }; out = r.body;
+  } else {
+    const key = await decrypt(env, space, sealed);
+    const httpResp = await fetch(req.url, { method: req.method || "GET", headers: { ...(req.headers || {}), [card.header]: card.header_prefix + key }, body: req.body == null ? undefined : typeof req.body === "string" ? req.body : JSON.stringify(req.body) });
+    const text = await httpResp.text();
+    try { out = JSON.parse(text); } catch { out = text; }
+    resp = { status: httpResp.status };
+  }
+  card.used++;
+  await env.VAULT.put(K(space, "card", card.id), JSON.stringify(card));
+  // provenance: who charged, where, to what host, and where they're left on the cap.
+  await logEvent(env, space, "card.charge", { id: card.id, holder: card.holder || null, host, method: req.method || "GET", status: resp.status, used: card.used, limit: card.limit ?? null });
+  return { authorized: true, status: resp.status, body: out, card: { id: card.id, used: card.used, remaining: card.limit != null ? Math.max(0, card.limit - card.used) : null } };
 }
 
 export default {
@@ -246,6 +349,103 @@ export default {
     const authResp = await handleAuth(request, env, url, path);
     if (authResp) return authResp;
 
+    // ── AGENT-FACING discovery + request. No wallet credential: the agent names the repo it's
+    // working in, and the Fort Wallet GitHub App being INSTALLED there resolves the owner's space.
+    // Returns NAMES + hosts only, never key values. /request lands a PENDING card for the owner to
+    // approve (push + wake-back). v1 gate = app-installed-on-repo; hardening (require repo-write
+    // proof so randoms can't spam the queue) is the next layer. ──
+    if ((path === "/agent/discover" || path === "/agent/request" || path === "/agent/use") && request.method === "POST") {
+      const b = await request.json().catch(() => ({}));
+      if (!b.repo) return json({ error: "repo required (owner/name) — the repo you're working in" }, 400);
+      if (!appConfigured(env)) return json({ error: "wallet not set up for app-based requests" }, 503);
+      let aspace;
+      try {
+        const o = await getInstallationOwner(env, b.repo);
+        aspace = "github:" + o.id;
+      } catch (e) {
+        return json({ error: (e && e.message) || ("Fort Wallet not installed on " + b.repo) }, 403);
+      }
+      // Billing is at the door for agents too: an agent may only touch a space whose owner is
+      // subscribed. Billing off (no Stripe card issued) passes straight through.
+      {
+        const bcard = await billingCard(env);
+        if (bcard && !(await isSubscribed(env, stripeCharger(env, bcard), aspace))) {
+          return json({ error: "this space's Fort Card subscription is inactive — the owner must subscribe in the wallet", code: "subscribe_required" }, 402);
+        }
+      }
+      if (path === "/agent/discover") {
+        const cardList = await env.VAULT.list({ prefix: K(aspace, "card", "") });
+        const usable = [];
+        for (const k of cardList.keys) {
+          const c = JSON.parse(await env.VAULT.get(k.name));
+          if (!c.pending && !c.frozen) usable.push({ id: c.id, name: c.name, allowed_hosts: c.allowed_hosts, remaining: c.limit != null ? Math.max(0, c.limit - c.used) : null });
+        }
+        const secPrefix = K(aspace, "secret", "");
+        const secList = await env.VAULT.list({ prefix: secPrefix });
+        const requestable = secList.keys.map((k) => k.name.slice(secPrefix.length));
+        return json({
+          usable_cards: usable,
+          requestable_secrets: requestable,
+          push_subscriptions: (await listSubscriptions(env, aspace)).length,
+          note: "Charge a usable card with /cards/:id/use. To get a new one: POST /agent/request {repo, pr, secret, allowed_hosts} — it lands pending for the owner to approve, then the wake-back posts to your PR.",
+        });
+      }
+      if (path === "/agent/use") {
+        // charge a card the owner already approved in this space — the wake → use step.
+        const c = await env.VAULT.get(K(aspace, "card", String(b.card)), "json");
+        if (!c) return json({ error: "no such card in this space" }, 404);
+        // the charger must hold the one-time charge token handed to the requester. Naming the repo
+        // + card id is NOT enough — only the agent that made the request can spend the card.
+        if (!c.charge_hash || (await sha256hex(b.token || "")) !== c.charge_hash) {
+          return json({ error: "charge token required/invalid — only the requesting agent can charge this card" }, 403);
+        }
+        return json(await chargeCard(env, aspace, c, b.request));
+      }
+      // /agent/request
+      if (!b.secret || !Array.isArray(b.allowed_hosts) || !b.allowed_hosts.length) {
+        return json({ error: "secret and a non-empty allowed_hosts array are required" }, 400);
+      }
+      // A request declares its cap, OR asks for unlimited (e.g. an email sender scoped to one host).
+      // Either way it lands PENDING and inert until the owner approves it — the human sees the cap (or
+      // "unlimited") and the single allowed host on approval, and the host scope is the real control.
+      let limit;
+      if (b.unlimited === true || b.charges === "unlimited" || b.limit === null) {
+        limit = null; // open-ended — the owner approves this knowingly; the allowed_hosts scope bounds it
+      } else {
+        const charges = Number(b.charges != null ? b.charges : b.limit);
+        if (!Number.isInteger(charges) || charges < 1) {
+          return json({ error: "charges required: a positive integer, OR pass unlimited:true for an open-ended card (e.g. an email sender). Either way it lands pending for the owner to approve." }, 400);
+        }
+        limit = charges;
+      }
+      const rid = "card_" + crypto.randomUUID().slice(0, 8);
+      // one-time charge token, returned ONCE to this requester. Only the holder can charge the card
+      // (we store only its hash). Binds the charger to the agent that actually made the request.
+      const chargeToken = "fcu_" + b64e(crypto.getRandomValues(new Uint8Array(24)).buffer).replace(/[+/=]/g, "");
+      const reqCard = {
+        id: rid,
+        name: b.label || "request from " + b.repo,
+        secret: String(b.secret),
+        holder: String(b.repo),
+        allowed_hosts: b.allowed_hosts.map(String),
+        header: "Authorization",
+        header_prefix: "Bearer ",
+        limit,
+        used: 0,
+        expires_at: null,
+        frozen: true,
+        pending: true,
+        charge_hash: await sha256hex(chargeToken),
+        wake: b.pr ? { repo: String(b.repo), pr: Number(b.pr) } : null,
+        created: new Date().toISOString(),
+      };
+      await env.VAULT.put(K(aspace, "card", rid), JSON.stringify(reqCard));
+      await logEvent(env, aspace, "card.request", { id: rid, name: reqCard.name, secret: reqCard.secret, allowed_hosts: reqCard.allowed_hosts, limit, repo: b.repo });
+      await notifyCardRequest(env, aspace, reqCard);
+      const cap = limit == null ? "unlimited charges" : "capped at " + limit + " charge" + (limit > 1 ? "s" : "");
+      return json({ ok: true, pending: true, card: rid, charge_token: chargeToken, note: "Pending the owner's approval (" + cap + ", scoped to " + reqCard.allowed_hosts.join(", ") + "). Keep charge_token — only its holder can charge this card via /agent/use {token}." });
+    }
+
     // WHO is calling, and WHICH space do they operate in?
     //   • OAuth session   → a verified SaaS tenant, operating in their OWN identity-born space.
     //   • FORT_KEY        → the self-host owner (single-tenant, `FORT_SPACE`).
@@ -268,16 +468,69 @@ export default {
     const pkResp = await handlePasskey(env, request, url, path, human ? { space, human, login: session ? session.login : "owner" } : null);
     if (pkResp) return pkResp;
 
-    // Owner acts by an OAuth human (a browser session) demand a FRESH passkey tap, EACH TIME
-    // (DESIGN §3): the route requires an X-Fort-Action step-up token scoped to this act. A self-host
-    // owner presenting FORT_KEY is an API token, not a browser human, so it is not step-up-gated.
-    const stepIfSession = async (action) => (session ? requireStepUp(env, request, space, action) : null);
+    // The auth model: GitHub OAuth is the FLOOR — it signs you in, recovers you on any device, and
+    // lets you enroll a passkey. A fingerprint tap then UNLOCKS the wallet for a short window
+    // (fc_unlock cookie, set on enroll or unlock). Acting requires that unlock — so a browser
+    // session alone can view + enroll, but must tap a fingerprint to act. The passkey is never a
+    // standalone key: it's re-enrollable via OAuth, so losing a device can never lock you out.
+    // (A self-host FORT_KEY caller is an API token, not a browser human — not unlock-gated.)
+    const requireUnlock = async () => {
+      if (!session) return null;
+      const u = await verify(env, readCookie(request, "fc_unlock"));
+      if (u && u.kind === "unlock" && u.space === space) return null;
+      return json({ error: "locked — unlock with your fingerprint", code: "unlock_required" }, 401);
+    };
+    const stepIfSession = async () => requireUnlock();
+
+    // ── BILLING GATE (DESIGN: monetization). At the door, after sign-in, before any wallet USE.
+    // Only applies to managed (OAuth-session) tenants when billing is configured — a self-host
+    // FORT_KEY/agent caller is never gated (they don't pay the SaaS operator). Reads stay open so
+    // an unsubscribed space can see its empty wallet and subscribe; acting routes call requireSub().
+    const bcard = await billingCard(env);
+    const charge = bcard ? stripeCharger(env, bcard) : null;
+    const billingOn = !!bcard && !!session;
+    const subscribed = billingOn ? await isSubscribed(env, charge, space) : true;
+    const requireSub = () =>
+      subscribed ? null : json({ error: "subscription required — subscribe in the wallet to use it", code: "subscribe_required" }, 402);
 
     const body = request.method === "GET" ? {} : await request.json().catch(() => ({}));
+
+    // ── billing routes (session tenants). status is always safe to read; subscribe needs the
+    // customer to accept the terms; confirm verifies the Checkout return by querying Stripe. ──
+    if (path === "/billing/status" && request.method === "GET") {
+      return json({ enabled: !!bcard, subscribed, price_cents: priceCents(env) });
+    }
+    if (path === "/billing/subscribe" && request.method === "POST") {
+      if (!session) return json({ error: "sign in to subscribe" }, 401);
+      if (!bcard) return json({ error: "billing is not enabled on this instance" }, 400);
+      if (subscribed) return json({ ok: true, already_subscribed: true });
+      // The terms agreement is collected on Stripe's Checkout page (native ToS consent) — no app-side
+      // checkbox. Subscribe just opens Checkout, where Stripe shows the agreement before payment.
+      try {
+        const { url: checkoutUrl, id } = await createCheckout(env, charge, space, url.origin);
+        await logEvent(env, space, "billing.checkout", { session: id });
+        return json({ url: checkoutUrl });
+      } catch (e) {
+        return json({ error: (e && e.message) || "could not start checkout" }, 502);
+      }
+    }
+    if (path === "/billing/confirm" && request.method === "POST") {
+      if (!session) return json({ error: "sign in first" }, 401);
+      if (!bcard) return json({ subscribed: true });
+      if (!body.session_id) return json({ error: "session_id required" }, 400);
+      try {
+        const r = await confirmCheckout(env, charge, space, body.session_id);
+        if (r.subscribed) await logEvent(env, space, "billing.active", { subscription: r.subscription });
+        return json(r);
+      } catch (e) {
+        return json({ error: (e && e.message) || "could not confirm checkout" }, 502);
+      }
+    }
 
     // ── agents: mint / list / revoke scoped bearers (mint + revoke are owner acts, step-up gated) ──
     if (path === "/agents" && request.method === "POST") {
       if (!human) return json({ error: HUMAN_REQUIRED }, 403);
+      { const g = requireSub(); if (g) return g; }
       const s = await stepIfSession("agent.mint");
       if (s) return s;
       const minted = await mintAgentBearer(env, space, { label: body.label, ttl_days: body.ttl_days });
@@ -300,9 +553,34 @@ export default {
       }
     }
 
+    // ── push: the owner's installed wallet subscribes so it buzzes when an agent requests a card ──
+    if (path === "/push/key" && request.method === "GET") {
+      return json({ key: await vapidPublicKey(env) });
+    }
+    if (path === "/push/subscribe" && request.method === "POST") {
+      if (!human) return json({ error: HUMAN_REQUIRED }, 403);
+      try {
+        return json(await addSubscription(env, space, body.subscription || body));
+      } catch (e) {
+        return json({ error: e.message || "invalid subscription" }, 400);
+      }
+    }
+    if (path === "/push/unsubscribe" && request.method === "POST") {
+      await removeSubscription(env, space, body.endpoint);
+      return json({ ok: true });
+    }
+
+    // ── list secret NAMES (never values) so the app can show what's stored + pick one for a card ──
+    if (path === "/secrets" && request.method === "GET") {
+      const prefix = K(space, "secret", "");
+      const list = await env.VAULT.list({ prefix });
+      return json({ secrets: list.keys.map((k) => k.name.slice(prefix.length)) });
+    }
+
     // ── store a secret (owner only — seeding a real key into the vault is a human act) ──
     if (path === "/secrets" && request.method === "POST") {
       if (!human) return json({ error: HUMAN_REQUIRED }, 403);
+      { const g = requireSub(); if (g) return g; }
       const s = await stepIfSession("secret.store");
       if (s) return s;
       if (!body.name || !body.value) return json({ error: "name and value required" }, 400);
@@ -326,6 +604,7 @@ export default {
     // agent token can never trigger it. The owner generates; only the owner commits. ──
     if (path === "/rotate" && request.method === "POST") {
       if (!human) return json({ error: HUMAN_REQUIRED }, 403);
+      { const g = requireSub(); if (g) return g; }
       const s = await stepIfSession("vault.rotate");
       if (s) return s;
       let res;
@@ -360,6 +639,7 @@ export default {
       if (!body.name || !body.secret || !Array.isArray(body.allowed_hosts) || body.allowed_hosts.length === 0) {
         return json({ error: "name, secret, and a non-empty allowed_hosts array are required" }, 400);
       }
+      { const g = requireSub(); if (g) return g; }
       const pending = !human; // an agent can ask, but never mint its own live allowance
       if (!pending) {
         // a human issuing an ACTIVE card is an owner act — fresh tap (sessions only).
@@ -380,13 +660,16 @@ export default {
         expires_at: body.expires_at || null,
         frozen: pending, // pending cards are inert until approved
         pending,
+        // the wake target: where the requesting agent is working + listening (its own repo/PR).
+        // On approval the wallet posts a comment there so the subscribed agent resumes at once.
+        wake: body.wake && body.wake.repo && body.wake.pr ? { repo: String(body.wake.repo), pr: Number(body.wake.pr) } : null,
         created: new Date().toISOString(),
       };
       await env.VAULT.put(K(space, "card", id), JSON.stringify(card));
       await logEvent(env, space, pending ? "card.request" : "card.issue", {
         id, name: card.name, secret: card.secret, holder: card.holder, allowed_hosts: card.allowed_hosts, limit: card.limit, pending,
       });
-      if (pending) await notifyCardRequest(env, card);
+      if (pending) await notifyCardRequest(env, space, card);
       return json(card);
     }
 
@@ -433,6 +716,7 @@ export default {
         // a card — owner only — and unfreezing a PENDING card is how the owner approves it.
         if (!frozen && !human) return json({ error: HUMAN_REQUIRED }, 403);
         if (!frozen) {
+          const g = requireSub(); if (g) return g;
           const s = await stepIfSession("card.approve");
           if (s) return s;
         }
@@ -441,6 +725,7 @@ export default {
         if (!frozen) card.pending = false;
         await env.VAULT.put(K(space, "card", id), JSON.stringify(card));
         await logEvent(env, space, frozen ? "card.freeze" : approved ? "card.approve" : "card.unfreeze", { id });
+        if (approved) await wakeRequester(env, space, card); // write back to the agent's branch so it resumes
         return json({ id, frozen: card.frozen, pending: card.pending || false });
       }
       if (!sub && request.method === "DELETE") {
@@ -449,6 +734,7 @@ export default {
         return json({ revoked: id });
       }
       if (sub === "/use" && request.method === "POST") {
+        { const g = requireSub(); if (g) return g; }
         // authorize (ISO-8583 in spirit) — a decline is still a line on the statement
         const decline = async (reason) => {
           await logEvent(env, space, "card.decline", { id, reason });

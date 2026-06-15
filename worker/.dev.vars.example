@@ -1,0 +1,16 @@
+# Fort Card — secrets. Copy this to `.dev.vars` for local dev. When you click
+# "Deploy to Cloudflare", the setup page prompts you for each of these.
+#
+# Secrets NEVER live in wrangler.toml or the repo — only here (gitignored) / on the Worker.
+
+# REQUIRED — the root key that encrypts your whole vault (AES-GCM KEK).
+# Generate one and paste it:  openssl rand -base64 32
+MASTER_KEY=
+
+# REQUIRED — your owner bearer token. Any strong random string. Every owner API call
+# (store a secret, issue a card, rotate) authenticates with this.
+FORT_KEY=
+
+# OPTIONAL — a separate token you hand to agents. If set, a card an agent issues is
+# "pending" (inert) until you approve it as the owner. Leave blank for simple single-token mode.
+FORT_AGENT_KEY=

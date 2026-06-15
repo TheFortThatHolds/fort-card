@@ -30,6 +30,13 @@ const json = (o, status = 200) =>
 const CHAL_COOKIE = "fc_chal";
 const CHAL_TTL_SEC = 60 * 5;
 const STEPUP_TTL_SEC = 60 * 2;
+// One fingerprint tap (enroll OR unlock) opens the wallet for this long; then it locks again and
+// asks for the tap once more. GitHub stays the floor underneath — this only gates ACTING.
+const UNLOCK_COOKIE = "fc_unlock";
+const UNLOCK_TTL_SEC = 60 * 30;
+async function unlockCookie(env, space) {
+  return setCookie(UNLOCK_COOKIE, await sign(env, { space, kind: "unlock", exp: Date.now() + UNLOCK_TTL_SEC * 1000 }), UNLOCK_TTL_SEC);
+}
 
 async function sha256(bytes) {
   return new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
@@ -142,10 +149,33 @@ function checkClientData(clientDataBytes, expectedType, expectedChallenge, expec
 
 const passkeyKey = (space, credId) => `${space}:passkey:${credId}`;
 const passkeyPrefix = (space) => `${space}:passkey:`;
+const indexKey = (space) => `${space}:passkey_index`;
+
+// KV list() is eventually consistent (can lag a write by tens of seconds), so enumerating
+// passkeys via list() makes a freshly-enrolled credential briefly invisible — the card stays on
+// "No passkey" even though it's saved and working. We keep a strongly-consistent INDEX (read via
+// get()) of {credId,label,created} and enumerate from that. The per-credential records still hold
+// the key material for verification. Heals old data by backfilling the index from list() once.
+async function listCreds(env, space) {
+  const idx = await env.VAULT.get(indexKey(space), "json");
+  if (idx && idx.length) return idx;
+  const out = [];
+  const list = await env.VAULT.list({ prefix: passkeyPrefix(space) });
+  for (const k of list.keys) {
+    const r = await env.VAULT.get(k.name, "json");
+    if (r) out.push({ credId: r.credId, label: r.label, created: r.created });
+  }
+  if (out.length) await env.VAULT.put(indexKey(space), JSON.stringify(out));
+  return out;
+}
+async function addToIndex(env, space, entry) {
+  const idx = (await env.VAULT.get(indexKey(space), "json")) || [];
+  if (!idx.some((e) => e.credId === entry.credId)) idx.push(entry);
+  await env.VAULT.put(indexKey(space), JSON.stringify(idx));
+}
 
 export async function spaceHasPasskey(env, space) {
-  const list = await env.VAULT.list({ prefix: passkeyPrefix(space), limit: 1 });
-  return list.keys.length > 0;
+  return (await listCreds(env, space)).length > 0;
 }
 
 // ── per-action STEP-UP enforcement. A sensitive route calls this; it passes only if the caller
@@ -175,7 +205,7 @@ export async function handlePasskey(env, request, url, path, auth) {
   if (path === "/passkey/register/begin" && request.method === "POST") {
     const challenge = b64u(crypto.getRandomValues(new Uint8Array(32)).buffer);
     const chalTok = await sign(env, { challenge, kind: "create", space, exp: Date.now() + CHAL_TTL_SEC * 1000 });
-    const existing = await env.VAULT.list({ prefix: passkeyPrefix(space) });
+    const existing = await listCreds(env, space);
     return new Response(
       JSON.stringify({
         publicKey: {
@@ -184,7 +214,7 @@ export async function handlePasskey(env, request, url, path, auth) {
           user: { id: b64u(te.encode(space)), name: auth.login || space, displayName: auth.login || space },
           pubKeyCredParams: [{ type: "public-key", alg: -7 }, { type: "public-key", alg: -257 }],
           authenticatorSelection: { userVerification: "required", residentKey: "preferred" },
-          excludeCredentials: existing.keys.map((k) => ({ type: "public-key", id: k.name.slice(passkeyPrefix(space).length) })),
+          excludeCredentials: existing.map((e) => ({ type: "public-key", id: e.credId })),
           timeout: 120000,
           attestation: "none",
         },
@@ -208,30 +238,26 @@ export async function handlePasskey(env, request, url, path, auth) {
       const credId = b64u(authData.credId);
       const record = { credId, jwk, alg, signCount: authData.signCount, label: body.label || "passkey", created: new Date().toISOString() };
       await env.VAULT.put(passkeyKey(space, credId), JSON.stringify(record));
-      return new Response(JSON.stringify({ ok: true, credId, label: record.label }), {
-        status: 200,
-        headers: { "Content-Type": "application/json", "Set-Cookie": setCookie(CHAL_COOKIE, "", 0) },
-      });
+      await addToIndex(env, space, { credId, label: record.label, created: record.created });
+      // Just enabled a fingerprint on this device = present = unlock the session too.
+      const headers = new Headers({ "Content-Type": "application/json" });
+      headers.append("Set-Cookie", setCookie(CHAL_COOKIE, "", 0));
+      headers.append("Set-Cookie", await unlockCookie(env, space));
+      return new Response(JSON.stringify({ ok: true, credId, label: record.label, unlocked: true }), { status: 200, headers });
     } catch (e) {
       return json({ error: "registration failed: " + (e.message || "invalid") }, 400);
     }
   }
 
   if (path === "/passkey/list" && request.method === "GET") {
-    const list = await env.VAULT.list({ prefix: passkeyPrefix(space) });
-    const out = [];
-    for (const k of list.keys) {
-      const r = JSON.parse(await env.VAULT.get(k.name));
-      out.push({ credId: r.credId, label: r.label, created: r.created });
-    }
-    return json({ passkeys: out });
+    return json({ passkeys: await listCreds(env, space) });
   }
 
   if (path === "/passkey/assert/begin" && request.method === "POST") {
     const action = String(body.action || "");
     if (!action) return json({ error: "action required (the act you're stepping up to authorize)" }, 400);
-    const list = await env.VAULT.list({ prefix: passkeyPrefix(space) });
-    if (list.keys.length === 0) return json({ error: "no passkey enrolled — register one first" }, 400);
+    const creds = await listCreds(env, space);
+    if (creds.length === 0) return json({ error: "no passkey enrolled — register one first" }, 400);
     const challenge = b64u(crypto.getRandomValues(new Uint8Array(32)).buffer);
     const chalTok = await sign(env, { challenge, kind: "get", space, action, exp: Date.now() + CHAL_TTL_SEC * 1000 });
     return new Response(
@@ -240,7 +266,7 @@ export async function handlePasskey(env, request, url, path, auth) {
           challenge,
           rpId,
           userVerification: "required",
-          allowCredentials: list.keys.map((k) => ({ type: "public-key", id: k.name.slice(passkeyPrefix(space).length) })),
+          allowCredentials: creds.map((e) => ({ type: "public-key", id: e.credId })),
           timeout: 120000,
         },
       }),
@@ -269,11 +295,13 @@ export async function handlePasskey(env, request, url, path, auth) {
       if (!ok) throw new Error("bad signature");
       rec.signCount = parsed.signCount;
       await env.VAULT.put(passkeyKey(space, credId), JSON.stringify(rec));
+      // A fingerprint tap opens the wallet for this session (the per-action step-up token is kept
+      // for callers that want one, but the unlock cookie is what gates acting).
       const actionToken = await sign(env, { space, action: claim.action, jti: crypto.randomUUID(), exp: Date.now() + STEPUP_TTL_SEC * 1000 });
-      return new Response(JSON.stringify({ ok: true, action: claim.action, action_token: actionToken, expires_in: STEPUP_TTL_SEC }), {
-        status: 200,
-        headers: { "Content-Type": "application/json", "Set-Cookie": setCookie(CHAL_COOKIE, "", 0) },
-      });
+      const headers = new Headers({ "Content-Type": "application/json" });
+      headers.append("Set-Cookie", setCookie(CHAL_COOKIE, "", 0));
+      headers.append("Set-Cookie", await unlockCookie(env, space));
+      return new Response(JSON.stringify({ ok: true, action: claim.action, action_token: actionToken, unlocked: true, expires_in: UNLOCK_TTL_SEC }), { status: 200, headers });
     } catch (e) {
       return json({ error: "assertion failed: " + (e.message || "invalid") }, 400);
     }

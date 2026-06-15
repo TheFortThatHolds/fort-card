@@ -21,6 +21,10 @@ function appHeaders(env) {
   };
 }
 
+const b64bytes = (s) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
+// Generated PNG app icons (dark bg, copper rounded square) — required for the install prompt.
+const ICON192 = "iVBORw0KGgoAAAANSUhEUgAAAMAAAADACAYAAABS3GwHAAACSElEQVR42u3TQQ3CAAAEwVNA0gQnSKu5ugMLhAeP7jzWwOVmz+PxlqrNCAJAAkACQAJAAkACQAJAAkACQAJAAkACQAJAAkACQAJAAkACQAJAAkACQAJAAkACQAJAAkACQAJAAkACQAJAAkACQAJAAkACQAJAAuC7rvOlHwPA6XVjDHN6lTHM+VVGMMdXGcKcX2UEc36VEcz5VUYw51cZwZxfZQQACADnVxXBnF9lBAAIAAAEgPMriAAAAQCAAHB+BREAIAAAEAAACAAABAAAAgAAAQCAAABAAAAgAAAQAAAIAAAEAAACAAABAIAAAEAAACAAABAAAAgAAAQAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAIAAAEAAACAAABAAAAgAAAQAAAIAAAEAgAAAQAAAIAAAEAAACAAABAAAAgAAAQCAAABAAAAgAAAQAAAIAAAEAAACAAABAIAAAEAAACAAABAAAAgAAAQAAAIAAAEAgAAAQAAAIAAAEAAACAAABAAAAgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAIHB+AAAAAAAAAAAAAucHAAAAAAAAAAAgcH4AIHB+ABwLgDYACJw/DwAC588DgMD58wAgcP48AAicPw8ABMcHAALnBwAGpwcABqcHQAJAAkACQAJAAkACQAJAAkACQABIAEgASABIAEgASABIAEgASABIAEgASABIAEgASABIAEgASABIAEgASABIAEgASABIAEgASABIf+8Dbth9Sg/3KIgAAAAASUVORK5CYII=";
+const ICON512 = "iVBORw0KGgoAAAANSUhEUgAAAgAAAAIACAYAAAD0eNT6AAAKR0lEQVR42u3WMQ0AIAxFwSogIakTpGEOd+CgKyHccAY69L/I3jYA8JdwBAAQAACAAAAABAAAIAAAAAEAAAgAAEAAAAACAAAQAACAAAAABAAAIAAAAAEAAAgAAEAAAAACAAAQAAAgAAAAAQAACAAAQAAAAAIAABAAAIAAAAAEAAAgAAAAAQAACAAAQAAAAAIAABAAAIAAAAAEAAAgAABAAAAAAgAAEAAAgAAAAAQAACAAAAABAAAIAABAAAAAAgAAEAAAgAAAAAQAACAAAAABAAAIAABAAACAAAAABAAAIAAAAAEAAAgAAEAAAAACAAAQAACAAAAABAAAIAAAAAEAAAgAAEAAAAACAAAQAACAAAAAAeAQACAAAAABAAAIAABAAAAAAgAAEAAAgAAAAAQAACAAAAABAAAIAABAAAAAAgAAEAAAgAAAAAQAAAgARwAAAQAACAAAQAAAAAIAABAAAIAAAAAEAAAgAAAAAQAACAAAQAAAAAIAABAAAIAAAAAEAAAgALhrzQEU/AkEAIYeEAYIAIw+IAYQABh9QAwgADD6gP+EAMDwgxAAAYDhByEAAgDDD0IAAeAIGH4QAggADD8gBBAAGH9ABCAAMPyAEEAAYPwBEYAAwPgDIgABgPEHRAACAMMPCAEEAMYfEAEIAIw/IAIQABh/QAQgADD+gAhAAGD8ARGAAEAAAAIAAYBnBYgABIDxBxABCADjDyACEADGH0AECAAEAIAAEAAYfwARIAAw/gAiQAAgAAAB4A8LAIw/IAIQAAgAQAAgADD+gAhAACAAAAGAAMD4AyIAAYAAAAQAAgDjD4gABIAAABAACADjDyACEAACAEAAIAAEAIAAQAAYfwARgAAQAAACQAAgAAAEgADA+AOIAAGAAAAQAAIAAQAgAAQAxh9ABAgABACAABAACABAACAAEACAAEAAIAAAAYAAQAAAAgABYPwBRAACQAAACAAEgAAAEAAIAAEAIAAQAAIAQAAgAAQAgABAAAgAAAEgABAAAAJAACAAAASAAEAAAAgAAYAAABAAAgABACAABAACAEAACAAEACAAEAAIAEAAIAAQAIAAQAAgAAABgAAQAB4HIAAQAAIAQAAgAAQAgABAAAgAAAGAABAAAAIAASAAAAQAAkAAAAgAAeAQAgBAAAgABACAABAACAAAASAAEAAAAkAAIAAABIAAQAAACAABgAAABIB/LgAQAIAAQAAgAAABgABAAAACAAGAxwEIAASAAAAQAAgAAQAgABAAAgBAACAABACAAEAACAAAAYAAEAAAAkAAOIIAABAAAgABACAABAACAEAACAAEAIAAEAAIAAABIAAQAAACQAAgAAAEgABAAAACAAGAAAAEAAIAAQAIAAQAAgAQAAgAAQAgABAAAgBAACAABACAAEAACAAAAYAAEAAAAgABIAAABAACQAAACAABgAAAEAACAAEAIAAEAAIAQAAIAAQAgAAQAAgAAAEgABAAAAJAACAAAAGAAEAAAAIAAYAAAAQAAgABAAgABIAAABAACAABACAAEAACAEAAIAAEAIAAQAAIAAABgAAQAAACAAEgAAAEgABAAAAIAAGAAAAQAAIAAQAgAAQAAgBAAAgABACAABAACAAAASAAEACAAEAAIAAAAYAAQAAAAgABgAAABAACQAAACAAEgAAAEAAIAAEAIAAQAAIAQAAgAAQAgABAAAgAAAGAABAAAAJAACAAAASAAEAAAAgAAYAAABAAAgABACAABAACAEAACAAEAIAAEAAIAEAAIAAQAIAAQAAgAAABgABAAAACAAEgADwOQAAgAAQAgABAAAgAAAGAABAAAAIAASAAAAQAAkAAAAgABIAAABAAAsAhBACAABAACAAAASAAEAAAAkAAIAAABIAAQAAACAABgAAAEAACAAEACAD/XAAgAAABgABAAAACAAGAAAAEAAIAjwMQAAgAAQAgABAAAgBAACAABACAAEAACAAAAYAAEAAAAgABIAAABIAAcAQBACAABAACAEAACAAEAIAAEAAIAAABIAAQAAACQAAgAAAEgABAAAAIAAGAAAAEAAIAAQAIAAQAAgAQAAgABAAgABAAAgBAACAABACAAEAACAAAAYAAEAAAAgABIAAABAACQAAACAAEgAAAEAACAAEAIAAEAAIAQAAIAAQAgAAQAAgAAAEgABAAAAJAACAAAASAAEAAAAIAAYAAAAQAAgABAAgABAACABAACAABACAAEAACAEAAIAAEAIAAQAAIAAABgAAQAAACAAEgAAAEAAJAAAAIAAGAAAAQAAIAAQAgAAQAAgBAAAgABACAABAACAAAASAAEAAAAkAAIAAAAYAAQAAAAgABgAAABAACAAEACAAEgAAAEAAIAAEAIAAQAAIAQAAgAAQAgABAAAgAAAGAABAAAAIAASAAAASAAEAAAAgAAYAAABAAAgABACAABAACAEAACAAEAIAAEAAIAAABIAAQAIAAQAAgAAABgABAAAACAAGAAAAEAAJAAHgcgABAAAgAAAGAABAAAAIAASAAAAQAAkAAAAgABIAAABAACAABACAABIBDCAAAASAAEAAAAkAAIAAABIAAQAAACAABgAAAEAACABEAYPwFAAIAEAAIAAQAIAAQAAgAQAAgABAAgABAACAAAAGAABABAMYfASAAAAQAAkAAAAgABIAIADD+CAABACAAEAACAEAACABHEAEAxl8AIAAABIAAQAAACAABgAgAMP4CAAEAIAAEACIAMP4IAAQAIAAQAIgAwPgjABAAgABAACACAOOPAEAAAAIAAYAIAIw/AgABAAgABIAI8IQA448AEAEAxh8BIAAABAACQAQAGH8EgAgAMP4CABEAYPwFACIAwPgLAAQAIAAQAIgAwPgjABABgPFHACACAOOPAEAEAMYfAYAIAIw/AgAhABh+BAAiADD+CABEAGD8EQCIAMD4IwAQAoDhRwAgAgDjjwBACACGHwGAEADDDwIAIQCGHwEAQgAMPwIAhAAYfgQAiAEw+ggAEANg9BEAIAbA6CMAQBiAoUcAAAACAAAQAACAAAAABAAAIAAAAAEAAAgAAEAAAAACAAAQAAAgAAAAAQAACAAAQAAAAAIAABAAAIAAAAAEAAAgAAAAAQAACAAAQAAAAAIAABAAAIAAAAAEAAAgAABAADgEAAgAAEAAAAACAAAQAACAAAAABAAAIAAAAAEAAAgAAEAAAAACAAAQAACAAAAABAAAIAAAAAEAAALAEQBAAAAAAgAAEAAAgAAAAAQAACAAAAABAAAIAABAAAAAAgAAEAAAgAAAAAQAACAAAAABAAAIAABAAACAAAAABAAAIAAAAAEAAAgAAEAAAAACAAAQAACAAAAABAAAIAAAAAEAAAgAAEAAAAACAAAQAACAAAAAAQAACAAAQAAAAAIAABAAAIAAAAAEAAAgAAAAAQAACAAAQAAAAAIAABAAAIAAAAAEAAAgAAAAAQAAAgAAEAAAgAAAAAQAACAAAIDXHAmDz8VcGDOWAAAAAElFTkSuQmCC";
 export function handleApp(env, request, url, path) {
   if (path === "/app/manifest.webmanifest") {
     return new Response(
@@ -28,18 +32,28 @@ export function handleApp(env, request, url, path) {
         name: "Fort Wallet",
         short_name: "Wallet",
         start_url: "/app",
+        scope: "/app",
         display: "standalone",
         background_color: "#14110e",
         theme_color: "#14110e",
-        icons: [{ src: "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23b87333'/%3E%3Ctext x='32' y='44' font-size='34' text-anchor='middle' fill='%2314110e' font-family='sans-serif'%3E%E2%97%88%3C/text%3E%3C/svg%3E", sizes: "any", type: "image/svg+xml" }],
+        icons: [
+          { src: "/app/icon-192.png", sizes: "192x192", type: "image/png", purpose: "any maskable" },
+          { src: "/app/icon-512.png", sizes: "512x512", type: "image/png", purpose: "any maskable" },
+        ],
       }),
       { headers: { "Content-Type": "application/manifest+json" } },
     );
   }
+  if (path === "/app/icon-192.png") return new Response(b64bytes(ICON192), { headers: { "Content-Type": "image/png", "Cache-Control": "public, max-age=86400" } });
+  if (path === "/app/icon-512.png") return new Response(b64bytes(ICON512), { headers: { "Content-Type": "image/png", "Cache-Control": "public, max-age=86400" } });
   if (path === "/app/sw.js") {
     return new Response(
-      `self.addEventListener('install',e=>self.skipWaiting());self.addEventListener('activate',e=>self.clients.claim());self.addEventListener('fetch',()=>{});`,
-      { headers: { "Content-Type": "application/javascript" } },
+      `self.addEventListener('install',e=>self.skipWaiting());
+self.addEventListener('activate',e=>self.clients.claim());
+self.addEventListener('fetch',()=>{});
+self.addEventListener('push',e=>{let d={};try{d=e.data?e.data.json():{}}catch(_){d={}}e.waitUntil(self.registration.showNotification(d.title||'Fort Wallet',{body:d.body||'',data:{url:d.url||'/app'},badge:undefined}))});
+self.addEventListener('notificationclick',e=>{e.notification.close();const u=(e.notification.data&&e.notification.data.url)||'/app';e.waitUntil(self.clients.matchAll({type:'window',includeUncontrolled:true}).then(ws=>{for(const w of ws){if(w.url.indexOf('/app')>=0){return w.focus()}}return self.clients.openWindow(u)}))});`,
+      { headers: { "Content-Type": "application/javascript", "Service-Worker-Allowed": "/app" } },
     );
   }
   if (path === "/app") return new Response(PAGE, { headers: appHeaders(env) });
@@ -49,6 +63,8 @@ export function handleApp(env, request, url, path) {
 const PAGE = `<!doctype html><html lang="en"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>Fort Wallet</title><link rel="manifest" href="/app/manifest.webmanifest"><meta name="theme-color" content="#14110e">
+<meta name="mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"><meta name="apple-mobile-web-app-title" content="Fort Wallet">
+<link rel="apple-touch-icon" href="/app/icon-192.png"><link rel="icon" type="image/png" href="/app/icon-192.png">
 <style>
 :root{color-scheme:dark}*{box-sizing:border-box;margin:0;padding:0}
 body{font:16px/1.55 -apple-system,system-ui,Segoe UI,Roboto,sans-serif;background:#14110e;color:#efe7da;-webkit-font-smoothing:antialiased;padding:env(safe-area-inset-top) 0 40px}
@@ -80,17 +96,46 @@ label{font-size:13px;color:#cdc2af;display:block;margin-top:10px}
 .embed .hero,.embed .bar .sub{display:none}
 </style></head><body>
 <div class="wrap" id="root">
+  <div id="installbar" class="hide" style="background:#1d1812;border:1px solid #b87333;border-radius:12px;padding:12px 14px;margin:14px 0;display:flex;align-items:center;justify-content:space-between;gap:12px">
+    <span>📲 Install Fort Wallet on your phone</span><button class="btn p sm" id="installbtn">Install</button>
+  </div>
+  <div id="notifbar" class="hide" style="background:#1d1812;border:1px solid #b87333;border-radius:12px;padding:12px 14px;margin:14px 0;display:flex;align-items:center;justify-content:space-between;gap:12px">
+    <span>🔔 Turn on approval alerts</span><button class="btn p sm" id="notifbtn">Enable</button>
+  </div>
   <div id="signin" class="hide" style="padding:60px 0;text-align:center">
     <div class="hero" style="text-align:left"><h1>Fort <span class="c">Wallet</span></h1><p class="muted">Credentials issued like cards, not keys. Sign in to your space.</p></div>
     <a class="btn p" href="/login" style="margin-top:20px;display:inline-block">Sign in with GitHub</a>
+  </div>
+  <div id="lock" class="hide" style="padding:48px 0;text-align:center">
+    <div class="hero" style="text-align:left"><h1>Fort <span class="c">Wallet</span></h1></div>
+    <p class="muted" style="margin-bottom:18px">Signed in as <b id="lockwho">…</b></p>
+    <button class="btn p" id="unlock" style="font-size:16px;padding:14px 22px">Unlock with your fingerprint</button>
+    <p id="lockmsg" class="muted" style="margin-top:14px"></p>
+    <p class="muted" style="margin:26px auto 0;max-width:460px">Your fingerprint guards this device — it never leaves it. GitHub is your sign-in and your recovery: lose this device, sign back in anywhere and re-enable it, and your vault is right there. You can't be locked out.</p>
+    <a class="muted" href="/logout" style="display:inline-block;margin-top:16px">Sign out</a>
+  </div>
+  <div id="gate" class="hide" style="padding:40px 0">
+    <div class="hero" style="text-align:left"><h1>Fort <span class="c">Wallet</span></h1><p class="muted">Signed in as <b id="gatewho">…</b></p></div>
+    <div class="card" style="margin-top:18px">
+      <div class="row"><b style="font-size:18px">Subscription</b><span class="pill warn" id="gateprice">$8 / month</span></div>
+      <p class="muted" style="margin-top:10px">Your own sealed vault: store keys, issue capped cards, approve agent requests from your phone. One price, everything in. Cancel anytime.</p>
+      <button class="btn p" id="subbtn" style="margin-top:16px;width:100%;font-size:16px;padding:14px">Subscribe</button>
+      <p class="muted" style="margin-top:10px">You'll review and accept the terms on the secure checkout page.</p>
+      <p id="gatemsg" class="muted" style="margin-top:12px"></p>
+    </div>
+    <a class="muted" href="/logout" style="display:inline-block;margin-top:16px">Sign out</a>
   </div>
   <div id="app" class="hide">
     <div class="bar"><div class="id">space <b id="who">…</b></div><a class="btn sm" href="/logout">Sign out</a></div>
 
     <h2>This device</h2>
     <div class="card"><div class="row">
-      <div><div id="pkstate" class="muted">Checking passkey…</div><div class="muted">A fingerprint is required for every sensitive act.</div></div>
+      <div><div id="pkstate" class="muted">Checking passkey…</div><div class="muted">Enable your fingerprint to guard your secrets — it never leaves this device. GitHub stays your recovery, so a lost device never locks you out.</div></div>
       <button class="btn" id="enroll">Add passkey</button>
+    </div></div>
+    <div class="card hide" id="pushcard"><div class="row">
+      <div><b>Notifications</b><div class="muted">Get a push when an agent requests a card — approve right from your phone.</div><div id="pushstatus" class="muted" style="margin-top:6px"></div></div>
+      <button class="btn" id="pushbtn">Enable</button>
     </div></div>
 
     <h2>Pending approvals</h2>
@@ -107,6 +152,7 @@ label{font-size:13px;color:#cdc2af;display:block;margin-top:10px}
     </details>
 
     <h2>Secrets</h2>
+    <div id="secrets"><div class="muted">Loading…</div></div>
     <details class="card"><summary style="cursor:pointer">Store a secret</summary>
       <label>Name<input id="s_name" placeholder="openai-key"></label>
       <label>Value<input id="s_val" placeholder="sk-…" autocomplete="off"></label>
@@ -134,42 +180,59 @@ const b2b=b=>btoa(String.fromCharCode(...new Uint8Array(b))).replace(/\\+/g,'-')
 const s2b=s=>{s=s.replace(/-/g,'+').replace(/_/g,'/');return Uint8Array.from(atob(s+'='.repeat((4-s.length%4)%4)),c=>c.charCodeAt(0))};
 async function jget(p,o){const r=await api(p,o);let j={};try{j=await r.json()}catch{}if(!r.ok)throw new Error(j.error||('HTTP '+r.status));return j}
 
+let me='',hasPk=false;
+function pkmsg(html){$('#pkstate').innerHTML=html}
+function regSW(){if('serviceWorker'in navigator)navigator.serviceWorker.register('/app/sw.js',{scope:'/app'}).catch(()=>{})}
+function showApp(){$('#signin').classList.add('hide');$('#lock').classList.add('hide');$('#app').classList.remove('hide');load();maybeNudge()}
+const standalone=()=>matchMedia('(display-mode: standalone)').matches||navigator.standalone===true;
+let deferredPrompt=null;
+addEventListener('beforeinstallprompt',e=>{e.preventDefault();deferredPrompt=e;if(!standalone())$('#installbar').classList.remove('hide')});
+addEventListener('appinstalled',()=>{deferredPrompt=null;$('#installbar').classList.add('hide')});
+function maybeNudge(){if(standalone()&&'Notification'in window&&Notification.permission==='default')$('#notifbar').classList.remove('hide')}
+function showLock(who){$('#lockwho').textContent=who||me;$('#signin').classList.add('hide');$('#app').classList.add('hide');$('#lock').classList.remove('hide');if(standalone())setTimeout(tryAutoUnlock,200)}
+// In the installed PWA, the launch gives us activation — so pop the fingerprint on open, no button
+// tap first. If the browser declines (needs an explicit tap), the Unlock button is right there.
+async function tryAutoUnlock(){try{$('#lockmsg').textContent='Confirm on your device…';await passkeyAssert();showApp()}catch(_){$('#lockmsg').textContent=''}}
+
 async function enroll(){
   try{
+    pkmsg('Starting…');
     const {publicKey:o}=await jget('/passkey/register/begin',{method:'POST'});
     o.challenge=s2b(o.challenge);o.user.id=s2b(o.user.id);
     o.excludeCredentials=(o.excludeCredentials||[]).map(c=>({...c,id:s2b(c.id)}));
-    const c=await navigator.credentials.create({publicKey:o});
-    await jget('/passkey/register/finish',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({clientDataJSON:b2b(c.response.clientDataJSON),attestationObject:b2b(c.response.attestationObject),label:(navigator.userAgentData&&navigator.userAgentData.platform)||'device'})});
-    toast('Passkey added.');load();
-  }catch(e){toast('Enroll failed: '+e.message)}
+    pkmsg('Confirm on your device…');
+    let c;
+    try{c=await navigator.credentials.create({publicKey:o})}
+    catch(err){if(err&&(err.name==='InvalidStateError'||err.name==='NotAllowedError')){await load();return}throw err}
+    pkmsg('Saving…');
+    await jget('/passkey/register/finish',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({clientDataJSON:b2b(c.response.clientDataJSON),attestationObject:b2b(c.response.attestationObject),label:'device'})});
+    await load();
+  }catch(e){pkmsg('<b style="color:#e7857a">Add passkey failed: '+(e.message||e.name||'unknown')+'</b>')}
 }
-// the banking-app tap: prove the human for ONE action, get a one-shot token
-async function stepUp(action){
-  const {publicKey:o}=await jget('/passkey/assert/begin',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action})});
+
+// one fingerprint tap proves presence and unlocks the wallet for this session (GitHub stays underneath)
+async function passkeyAssert(){
+  const {publicKey:o}=await jget('/passkey/assert/begin',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'unlock'})});
   o.challenge=s2b(o.challenge);o.allowCredentials=(o.allowCredentials||[]).map(c=>({...c,id:s2b(c.id)}));
   const c=await navigator.credentials.get({publicKey:o});
-  const r=await jget('/passkey/assert/finish',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:c.id,clientDataJSON:b2b(c.response.clientDataJSON),authenticatorData:b2b(c.response.authenticatorData),signature:b2b(c.response.signature)})});
-  return r.action_token;
+  await jget('/passkey/assert/finish',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:c.id,clientDataJSON:b2b(c.response.clientDataJSON),authenticatorData:b2b(c.response.authenticatorData),signature:b2b(c.response.signature)})});
 }
-async function withTap(action,fn){try{const t=await stepUp(action);await fn(t);load()}catch(e){toast(e.message||'cancelled')}}
+async function unlock(){const m=$('#lockmsg');try{m.textContent='Confirm on your device…';await passkeyAssert();showApp()}catch(e){m.innerHTML='<b style="color:#e7857a">'+(e.message||e.name||'cancelled')+'</b>'}}
 
+// run a sensitive action; the unlock session authorizes it. if it's locked, drop back to the tap.
+async function act(fn,okMsg){try{await fn();if(okMsg)toast(okMsg);load()}catch(e){const msg=e.message||'';if(msg.indexOf('lock')>=0){if(hasPk){toast('Locked — tap to unlock');showLock(me)}else toast('Enable your fingerprint first — tap Add passkey')}else toast(msg||e.name||'failed')}}
+
+const mkbtn=(t,cls)=>{const b=document.createElement('button');b.className='btn sm'+(cls?' '+cls:'');b.textContent=t;return b};
 function cardView(c,pending){
   const lim=c.limit==null?'∞':((c.remaining??0)+'/'+c.limit);
   const el=document.createElement('div');el.className='card'+(pending?' pending':'');
-  el.innerHTML='<div class="row"><div><b>'+c.name+'</b><div class="muted">'+(c.allowed_hosts||[]).join(', ')+' · uses '+lim+'</div></div>'+
-    '<span class="pill '+(pending?'warn':c.frozen?'dead':'')+'">'+(pending?'pending':c.frozen?'frozen':'active')+'</span></div>'+
-    '<div class="btns" style="margin-top:12px"></div>';
+  el.innerHTML='<div class="row"><div><b>'+c.name+'</b><div class="muted">'+(c.allowed_hosts||[]).join(', ')+' · uses '+lim+'</div></div><span class="pill '+(pending?'warn':c.frozen?'dead':'')+'">'+(pending?'pending':c.frozen?'frozen':'active')+'</span></div><div class="btns" style="margin-top:12px"></div>';
   const b=el.querySelector('.btns');
-  if(pending){const a=mkbtn('Approve (tap)','p');a.onclick=()=>withTap('card.approve',t=>jget('/cards/'+c.id+'/freeze',{method:'POST',headers:{'Content-Type':'application/json','X-Fort-Action':t},body:JSON.stringify({frozen:false})}));b.append(a);}
-  else{const f=mkbtn(c.frozen?'Unfreeze (tap)':'Freeze');
-    if(c.frozen)f.onclick=()=>withTap('card.approve',t=>jget('/cards/'+c.id+'/freeze',{method:'POST',headers:{'Content-Type':'application/json','X-Fort-Action':t},body:JSON.stringify({frozen:false})}));
-    else f.onclick=()=>jget('/cards/'+c.id+'/freeze',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({frozen:true})}).then(load);
-    b.append(f);}
-  const rv=mkbtn('Revoke');rv.onclick=()=>{if(confirm('Revoke '+c.name+'?'))jget('/cards/'+c.id,{method:'DELETE'}).then(load)};b.append(rv);
+  if(pending){const a=mkbtn('Approve','p');a.onclick=()=>act(()=>jget('/cards/'+c.id+'/freeze',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({frozen:false})}));b.append(a)}
+  else{const f=mkbtn(c.frozen?'Unfreeze':'Freeze');f.onclick=()=>act(()=>jget('/cards/'+c.id+'/freeze',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({frozen:!c.frozen})}));b.append(f)}
+  const rv=mkbtn('Revoke');rv.onclick=()=>{if(confirm('Revoke '+c.name+'?'))act(()=>jget('/cards/'+c.id,{method:'DELETE'}))};b.append(rv);
   return el;
 }
-const mkbtn=(t,cls)=>{const b=document.createElement('button');b.className='btn sm'+(cls?' '+cls:'');b.textContent=t;return b};
 
 async function load(){
   try{
@@ -179,29 +242,121 @@ async function load(){
     const ce=$('#cards');ce.innerHTML='';if(!live.length)ce.innerHTML='<div class="muted">No cards yet.</div>';else live.forEach(c=>ce.append(cardView(c,false)));
   }catch(e){$('#cards').innerHTML='<div class="muted">'+e.message+'</div>'}
   try{
-    const pk=(await jget('/passkey/list')).passkeys||[];
-    $('#pkstate').innerHTML=pk.length?('<b style="color:#7fae6d">✓ '+pk.length+' passkey'+(pk.length>1?'s':'')+'</b>'):'<b style="color:#e7a85a">No passkey — add one</b>';
-    $('#enroll').textContent=pk.length?'Add another':'Add passkey';
-  }catch{}
+    const pk=(await jget('/passkey/list')).passkeys||[];hasPk=pk.length>0;
+    $('#pkstate').innerHTML=hasPk?('<b style="color:#7fae6d">✓ '+pk.length+' passkey'+(pk.length>1?'s':'')+' on file</b>'):'<b style="color:#e7a85a">No passkey on this device — add one</b>';
+    $('#enroll').textContent=hasPk?'Add another':'Add passkey';
+  }catch(e){$('#pkstate').innerHTML='<b style="color:#e7857a">Couldn\\'t read passkeys: '+(e.message||'error')+'</b>'}
   try{
     const ag=(await jget('/agents')).agents||[];const ae=$('#agents');ae.innerHTML='';
     if(!ag.length)ae.innerHTML='<div class="muted">None.</div>';
-    ag.filter(a=>!a.revoked).forEach(a=>{const el=document.createElement('div');el.className='card';el.innerHTML='<div class="row"><div><b>'+a.label+'</b><div class="muted">'+a.id+(a.expires_at?' · expires '+a.expires_at.slice(0,10):'')+'</div></div></div><div class="btns" style="margin-top:10px"></div>';const rv=mkbtn('Revoke');rv.onclick=()=>{if(confirm('Revoke '+a.label+'?'))withTap('agent.revoke',t=>jget('/agents/'+a.id,{method:'DELETE',headers:{'X-Fort-Action':t}}))};el.querySelector('.btns').append(rv);ae.append(el)});
+    ag.filter(a=>!a.revoked).forEach(a=>{const el=document.createElement('div');el.className='card';el.innerHTML='<div class="row"><div><b>'+a.label+'</b><div class="muted">'+a.id+(a.expires_at?' · expires '+a.expires_at.slice(0,10):'')+'</div></div></div><div class="btns" style="margin-top:10px"></div>';const rv=mkbtn('Revoke');rv.onclick=()=>{if(confirm('Revoke '+a.label+'?'))act(()=>jget('/agents/'+a.id,{method:'DELETE'}))};el.querySelector('.btns').append(rv);ae.append(el)});
   }catch(e){$('#agents').innerHTML='<div class="muted">'+e.message+'</div>'}
   try{
     const ev=(await jget('/events?limit=12')).events||[];
     $('#events').innerHTML=ev.length?ev.map(e=>'<div class="row" style="border-top:1px solid #2c251c;padding:7px 0"><span>'+e.type+'</span><span class="muted">'+(e.ts||'').slice(5,16).replace('T',' ')+'</span></div>').join(''):'<div class="muted">No activity.</div>';
   }catch{}
+  try{
+    const ss=(await jget('/secrets')).secrets||[];
+    const se=$('#secrets');se.innerHTML='';
+    if(!ss.length){se.innerHTML='<div class="muted">No secrets stored yet.</div>'}
+    else ss.forEach(n=>{const el=document.createElement('div');el.className='card';el.innerHTML='<div class="row"><div><b>'+n+'</b><div class="muted">stored · the key a card draws on</div></div><div class="btns"></div></div>';const b=mkbtn('Roll over');b.onclick=()=>rollover(n);el.querySelector('.btns').append(b);se.append(el)});
+  }catch(e){$('#secrets').innerHTML='<div class="muted">'+e.message+'</div>'}
+  refreshPushState();
+}
+// roll a key over: fingerprint pops, paste the new value, it overwrites in place. The old value is
+// gone; cards pointing at this name now draw on the new key. No re-issuing cards needed.
+async function rollover(name){
+  try{
+    await passkeyAssert();
+    const v=prompt('Paste the NEW value for "'+name+'"');
+    if(!v)return;
+    await jget('/secrets',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,value:v})});
+    toast('Rolled over ✓');load();
+  }catch(e){toast(e.message||e.name||'cancelled')}
 }
 
+function urlB64(b){const pad='='.repeat((4-b.length%4)%4);const s=(b+pad).replace(/-/g,'+').replace(/_/g,'/');const r=atob(s);const u=new Uint8Array(r.length);for(let i=0;i<r.length;i++)u[i]=r.charCodeAt(i);return u}
+async function enablePush(){
+  const st=(m,c)=>{const e=$('#pushstatus');if(e){e.textContent=m;e.style.color=c||'#9a8f7d'}};
+  try{
+    if(!('serviceWorker'in navigator)){st('no service worker support','#e7857a');return}
+    if(!('PushManager'in window)){st('no PushManager (is it the installed app?)','#e7857a');return}
+    st('requesting permission…');
+    const perm=await Notification.requestPermission();
+    if(perm!=='granted'){st('permission: '+perm,'#e7857a');return}
+    st('registering worker…');
+    const reg=await navigator.serviceWorker.register('/app/sw.js',{scope:'/app'});
+    // don't wait on navigator.serviceWorker.ready (that needs page CONTROL and can hang) — just
+    // wait for this registration to have an ACTIVE worker, which is all subscribe needs.
+    if(!reg.active){await new Promise(res=>{const w=reg.installing||reg.waiting;if(!w){res();return}const h=()=>{if(w.state==='activated'){w.removeEventListener('statechange',h);res()}};w.addEventListener('statechange',h);setTimeout(res,8000)})}
+    st('fetching key…');
+    const {key}=await jget('/push/key');
+    if(!key){st('server returned no VAPID key','#e7857a');return}
+    st('subscribing…');
+    const old=await reg.pushManager.getSubscription();if(old){await old.unsubscribe().catch(()=>{})}
+    const sub=await reg.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:urlB64(key)});
+    st('saving to server…');
+    const r=await jget('/push/subscribe',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({subscription:sub.toJSON()})});
+    st('✓ subscribed ('+(r.id||'ok')+')','#7fae6d');await refreshPushState()
+  }catch(e){st('FAIL: '+(e.name||'')+' — '+(e.message||e),'#e7857a')}
+}
+// Quiet once subscribed: show the control only when there's no subscription; if there is one,
+// make sure the server has it (self-heal) and hide. Shows again if the subscription ever drops.
+async function refreshPushState(){
+  try{
+    const card=$('#pushcard');const bar=$('#notifbar');
+    const supported=('Notification'in window)&&('serviceWorker'in navigator)&&('PushManager'in window);
+    if(!supported||Notification.permission==='denied'){if(card)card.classList.add('hide');if(bar)bar.classList.add('hide');return}
+    const reg=await navigator.serviceWorker.getRegistration('/app').catch(()=>null)||await navigator.serviceWorker.getRegistration().catch(()=>null);
+    const sub=reg?await reg.pushManager.getSubscription():null;
+    if(sub){
+      try{await jget('/push/subscribe',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({subscription:sub.toJSON()})})}catch(_){}
+      if(card)card.classList.add('hide');if(bar)bar.classList.add('hide');return;
+    }
+    if(card){card.classList.remove('hide');const btn=$('#pushbtn');if(btn){btn.textContent=Notification.permission==='granted'?'Turn on notifications':'Enable';btn.disabled=false}}
+  }catch(_){}
+}
+// the pay gate (managed instances): show the subscribe screen until the space is subscribed.
+function showGate(bill){
+  $('#gatewho').textContent=me;
+  $('#gateprice').textContent='$'+((bill.price_cents||800)/100).toFixed(0).replace(/\\.0$/,'')+' / month';
+  $('#signin').classList.add('hide');$('#lock').classList.add('hide');$('#app').classList.add('hide');
+  $('#gate').classList.remove('hide');
+}
+$('#subbtn')&&($('#subbtn').onclick=async()=>{
+  const m=$('#gatemsg');
+  $('#subbtn').disabled=true;m.textContent='Opening secure checkout…';
+  try{const r=await jget('/billing/subscribe',{method:'POST',headers:{'Content-Type':'application/json'}});
+    if(r.url)location.href=r.url;else{m.innerHTML='<b style="color:#e7857a">No checkout URL returned.</b>';$('#subbtn').disabled=false}
+  }catch(e){m.innerHTML='<b style="color:#e7857a">'+(e.message||'failed')+'</b>';$('#subbtn').disabled=false}
+});
 $('#enroll').onclick=enroll;
-$('#issue').onclick=()=>{const hosts=$('#c_hosts').value.split(',').map(s=>s.trim()).filter(Boolean);const lim=$('#c_limit').value;withTap('card.issue',t=>jget('/cards',{method:'POST',headers:{'Content-Type':'application/json','X-Fort-Action':t},body:JSON.stringify({name:$('#c_name').value,secret:$('#c_secret').value,allowed_hosts:hosts,limit:lim?+lim:undefined})}))};
-$('#store').onclick=()=>withTap('secret.store',t=>jget('/secrets',{method:'POST',headers:{'Content-Type':'application/json','X-Fort-Action':t},body:JSON.stringify({name:$('#s_name').value,value:$('#s_val').value})}));
-$('#mint').onclick=async()=>{try{const t=await stepUp('agent.mint');const ttl=$('#a_ttl').value;const r=await jget('/agents',{method:'POST',headers:{'Content-Type':'application/json','X-Fort-Action':t},body:JSON.stringify({label:$('#a_label').value||'agent',ttl_days:ttl?+ttl:undefined})});alert('Bearer (shown ONCE — copy it now):\\n\\n'+r.token);load()}catch(e){toast(e.message||'cancelled')}};
+$('#unlock').onclick=unlock;
+$('#pushbtn').onclick=enablePush;
+$('#installbtn').onclick=async()=>{if(!deferredPrompt)return;deferredPrompt.prompt();await deferredPrompt.userChoice;deferredPrompt=null;$('#installbar').classList.add('hide')};
+$('#notifbtn').onclick=()=>enablePush().then(()=>$('#notifbar').classList.add('hide'));
+$('#issue').onclick=()=>{const hosts=$('#c_hosts').value.split(',').map(s=>s.trim()).filter(Boolean);const lim=$('#c_limit').value;act(async()=>{await jget('/cards',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:$('#c_name').value,secret:$('#c_secret').value,allowed_hosts:hosts,limit:lim?+lim:undefined})});$('#c_name').value='';$('#c_secret').value='';$('#c_hosts').value='';$('#c_limit').value=''},'Card issued ✓')};
+$('#store').onclick=()=>{if(!$('#s_name').value||!$('#s_val').value){toast('Name and value required');return}act(async()=>{await jget('/secrets',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:$('#s_name').value,value:$('#s_val').value})});$('#s_name').value='';$('#s_val').value=''},'Secret stored ✓')};
+$('#mint').onclick=()=>act(async()=>{const ttl=$('#a_ttl').value;const r=await jget('/agents',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({label:$('#a_label').value||'agent',ttl_days:ttl?+ttl:undefined})});alert('Bearer (shown ONCE — copy it now):\\n\\n'+r.token)});
 
 (async()=>{
-  try{const w=await jget('/whoami');$('#who').textContent=(w.login?w.login+' · ':'')+w.space;$('#app').classList.remove('hide');load();}
-  catch{$('#signin').classList.remove('hide');}
-  if('serviceWorker'in navigator)navigator.serviceWorker.register('/app/sw.js').catch(()=>{});
+  let w;try{w=await jget('/whoami')}catch{$('#signin').classList.remove('hide');return regSW()}
+  me=(w.login?w.login+' · ':'')+w.space;$('#who').textContent=me;
+  // The door: on a managed (billed) instance the space must be subscribed before any wallet use.
+  // Self-host returns enabled:false → subscribed:true, so this is a no-op there.
+  let bill={enabled:false,subscribed:true};try{bill=await jget('/billing/status')}catch{}
+  const qp=new URLSearchParams(location.search);
+  if(qp.get('billing')==='success'&&qp.get('session_id')){
+    try{const c=await jget('/billing/confirm',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({session_id:qp.get('session_id')})});
+      if(c.subscribed){bill.subscribed=true;toast('Subscribed ✓')}else toast(c.reason||'Payment not confirmed')}catch(e){toast(e.message||'confirm failed')}
+    history.replaceState({},'',location.pathname);
+  }else if(qp.get('billing')==='cancel'){toast('Checkout canceled');history.replaceState({},'',location.pathname)}
+  if(bill.enabled&&!bill.subscribed){showGate(bill);return regSW()}
+  // GitHub is the floor. If this device has a passkey, a tap opens the wallet (every time).
+  // If it doesn't (new/replacement device), GitHub alone gets you in to enable one — no lockout.
+  let has=false;try{has=((await jget('/passkey/list')).passkeys||[]).length>0}catch{}
+  hasPk=has;
+  if(has)showLock(w.login||w.space);else showApp();
+  regSW();
 })();
 </script></body></html>`;
