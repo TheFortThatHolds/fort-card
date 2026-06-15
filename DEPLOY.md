@@ -13,7 +13,8 @@ anything. Keys live on Cloudflare; this repo stays generic (no instance ids, no 
 
 3. **Worker vars + secrets** (Cloudflare dashboard → your Worker → Settings → Variables and Secrets).
    `keep_vars = true` keeps these across deploys.
-   - Secrets: `MASTER_KEY` (`openssl rand -base64 32`), `GH_CLIENT_SECRET`.
+   - Secret: `GH_CLIENT_SECRET`. (`MASTER_KEY` is minted automatically by the deploy workflow on
+     first run — a real Worker secret, never typed.)
    - Vars: `GH_CLIENT_ID`, `GH_CALLBACK_URL`, `WALLET_RPID`, `WALLET_ORIGIN`,
      and optionally `CORE_ORIGIN` (lets a host frame `/app` as a plugin).
 

@@ -2,11 +2,12 @@ name: deploy
 
 # One-time setup, then every push to main ships the worker — no local wrangler needed.
 # Repo secrets required (Settings → Secrets and variables → Actions):
-#   CLOUDFLARE_API_TOKEN    a Workers Scripts:Edit token
+#   CLOUDFLARE_API_TOKEN    a Workers Scripts:Edit token (also needs Workers KV Storage:Edit)
 #   CLOUDFLARE_ACCOUNT_ID   the account the worker lives in
 #   KV_NAMESPACE_ID         the VAULT KV namespace id (injected so the public template stays generic)
-# The worker's runtime vars + secrets (GH_CLIENT_ID, GH_CLIENT_SECRET, MASTER_KEY, …) are set on the
-# Worker in the Cloudflare dashboard; keep_vars=true preserves them across deploys.
+# The worker's other vars + secrets (GH_CLIENT_ID, GH_CLIENT_SECRET, …) are set on the Worker in the
+# Cloudflare dashboard; keep_vars=true preserves them across deploys. MASTER_KEY is minted once below
+# as a real Worker secret (never typed by a human, never stored in KV next to the ciphertext).
 
 on:
   push:
@@ -22,6 +23,9 @@ jobs:
     defaults:
       run:
         working-directory: worker
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -31,6 +35,11 @@ jobs:
         run: sed -i "s|PASTE_YOUR_KV_NAMESPACE_ID_HERE|${{ secrets.KV_NAMESPACE_ID }}|" wrangler.toml
       - name: Deploy
         run: npx --yes wrangler@3 deploy
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      - name: Mint MASTER_KEY once (random, on the runner; sets a Worker secret, never KV, never logged)
+        run: |
+          if npx --yes wrangler@3 secret list | grep -q '"MASTER_KEY"'; then
+            echo "MASTER_KEY already set — leaving it."
+          else
+            echo "Minting MASTER_KEY…"
+            openssl rand -base64 32 | npx --yes wrangler@3 secret put MASTER_KEY
+          fi
