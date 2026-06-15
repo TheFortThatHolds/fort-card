@@ -46,6 +46,8 @@
 //                            (best-effort; the hosted Core fans this out to email + web-push)
 
 import { handleAuth, resolveSession, oauthConfigured } from "./auth.js";
+import { handlePasskey, requireStepUp } from "./webauthn.js";
+import { resolveAgentBearer, mintAgentBearer, listAgents, revokeAgent } from "./agents.js";
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
@@ -219,26 +221,64 @@ export default {
     if (authResp) return authResp;
 
     // WHO is calling, and WHICH space do they operate in?
-    //   • OAuth session  → a verified SaaS tenant, operating in their OWN identity-born space.
-    //   • FORT_KEY       → the self-host owner (single-tenant, `FORT_SPACE`).
-    //   • FORT_AGENT_KEY → the everyday non-human caller (self-host space; per-space minted
-    //                      agent bearers arrive with build-order #5).
-    // A verified human (session OR owner token) may perform owner acts. NOTE: per DESIGN §3/§4
-    // those owner acts (issue-active / store / rotate / unfreeze) must additionally require a
-    // fresh passkey tap — that ceremony lands in build-order #4 and gates this before any managed
-    // multi-tenant deploy. Until then OAuth stays off in prod (no GitHub App = these routes 404).
+    //   • OAuth session   → a verified SaaS tenant, operating in their OWN identity-born space.
+    //   • FORT_KEY        → the self-host owner (single-tenant, `FORT_SPACE`).
+    //   • minted bearer   → an agent the owner provisioned (resolves to its own space).
+    //   • FORT_AGENT_KEY  → the self-host single agent (legacy/self-host space).
     const session = await resolveSession(request, env);
     const auth = request.headers.get("Authorization") || "";
-    const ownerToken = !!env.FORT_KEY && auth === "Bearer " + env.FORT_KEY;
-    const agent = !!env.FORT_AGENT_KEY && auth === "Bearer " + env.FORT_AGENT_KEY;
+    const bearer = auth.startsWith("Bearer ") ? auth.slice(7) : "";
+    const ownerToken = !!env.FORT_KEY && bearer === env.FORT_KEY;
+    const legacyAgent = !!env.FORT_AGENT_KEY && bearer === env.FORT_AGENT_KEY;
+    // A minted bearer carries its own space; only resolve it when it isn't an owner/legacy token.
+    const mintedAgent = !session && !ownerToken && !legacyAgent ? await resolveAgentBearer(env, bearer) : null;
+    const agent = legacyAgent || !!mintedAgent;
     const human = !!session || ownerToken;
     if (!session && !ownerToken && !agent) return json({ error: "unauthorized" }, 401);
-    const space = session ? session.space : env.FORT_SPACE || "owner";
+    const space = session ? session.space : mintedAgent ? mintedAgent.space : env.FORT_SPACE || "owner";
+
+    // Passkey enroll + per-action step-up — the banking-app gate. Only an authenticated human in a
+    // space reaches these; OAuth-unconfigured self-host never hits them (no session, owner uses a token).
+    const pkResp = await handlePasskey(env, request, url, path, human ? { space, human, login: session ? session.login : "owner" } : null);
+    if (pkResp) return pkResp;
+
+    // Owner acts by an OAuth human (a browser session) demand a FRESH passkey tap, EACH TIME
+    // (DESIGN §3): the route requires an X-Fort-Action step-up token scoped to this act. A self-host
+    // owner presenting FORT_KEY is an API token, not a browser human, so it is not step-up-gated.
+    const stepIfSession = async (action) => (session ? requireStepUp(env, request, space, action) : null);
+
     const body = request.method === "GET" ? {} : await request.json().catch(() => ({}));
+
+    // ── agents: mint / list / revoke scoped bearers (mint + revoke are owner acts, step-up gated) ──
+    if (path === "/agents" && request.method === "POST") {
+      if (!human) return json({ error: HUMAN_REQUIRED }, 403);
+      const s = await stepIfSession("agent.mint");
+      if (s) return s;
+      const minted = await mintAgentBearer(env, space, { label: body.label, ttl_days: body.ttl_days });
+      await logEvent(env, space, "agent.mint", { id: minted.id, label: minted.label, expires_at: minted.expires_at });
+      return json({ ...minted, note: "This token is shown ONCE. Store it now; it cannot be recovered." });
+    }
+    if (path === "/agents" && request.method === "GET") {
+      return json({ agents: await listAgents(env, space) });
+    }
+    {
+      const am = path.match(/^\/agents\/([^/]+)$/);
+      if (am && request.method === "DELETE") {
+        if (!human) return json({ error: HUMAN_REQUIRED }, 403);
+        const s = await stepIfSession("agent.revoke");
+        if (s) return s;
+        const r = await revokeAgent(env, space, am[1]);
+        if (r.error) return json(r, 404);
+        await logEvent(env, space, "agent.revoke", { id: am[1] });
+        return json(r);
+      }
+    }
 
     // ── store a secret (owner only — seeding a real key into the vault is a human act) ──
     if (path === "/secrets" && request.method === "POST") {
       if (!human) return json({ error: HUMAN_REQUIRED }, 403);
+      const s = await stepIfSession("secret.store");
+      if (s) return s;
       if (!body.name || !body.value) return json({ error: "name and value required" }, 400);
       let sealed;
       if (splitMode(env)) {
@@ -260,6 +300,8 @@ export default {
     // agent token can never trigger it. The owner generates; only the owner commits. ──
     if (path === "/rotate" && request.method === "POST") {
       if (!human) return json({ error: HUMAN_REQUIRED }, 403);
+      const s = await stepIfSession("vault.rotate");
+      if (s) return s;
       let res;
       if (splitMode(env)) {
         // gather every sealed secret + the current active wrapped DEK, hand them to the last-mile
@@ -293,6 +335,11 @@ export default {
         return json({ error: "name, secret, and a non-empty allowed_hosts array are required" }, 400);
       }
       const pending = !human; // an agent can ask, but never mint its own live allowance
+      if (!pending) {
+        // a human issuing an ACTIVE card is an owner act — fresh tap (sessions only).
+        const s = await stepIfSession("card.issue");
+        if (s) return s;
+      }
       const id = "card_" + crypto.randomUUID().slice(0, 8);
       const card = {
         id,
@@ -359,6 +406,10 @@ export default {
         // Freezing (kill switch) is a de-escalation any holder may do. UNFREEZING re-authorizes
         // a card — owner only — and unfreezing a PENDING card is how the owner approves it.
         if (!frozen && !human) return json({ error: HUMAN_REQUIRED }, 403);
+        if (!frozen) {
+          const s = await stepIfSession("card.approve");
+          if (s) return s;
+        }
         const approved = !frozen && !!card.pending;
         card.frozen = frozen;
         if (!frozen) card.pending = false;

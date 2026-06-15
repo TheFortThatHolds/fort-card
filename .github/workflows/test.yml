@@ -1,0 +1,27 @@
+name: test
+
+on:
+  pull_request:
+    paths:
+      - "worker/**"
+      - ".github/workflows/test.yml"
+  push:
+    branches: [main]
+
+jobs:
+  worker:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: worker
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Syntax-check every module
+        run: for f in src/*.js; do node --check "$f"; done
+      - name: WebAuthn roundtrip
+        run: node test/webauthn.test.mjs
+      - name: Agent-bearer lifecycle
+        run: node test/agents.test.mjs

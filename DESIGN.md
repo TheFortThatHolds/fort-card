@@ -157,12 +157,16 @@ operator's box.
 3. **GitHub App auth → space born on first verified login (state, immutable id, server-derived)**
    — 🚧 login flow built (`src/auth.js`: `/login` `/callback` `/logout` `/whoami`, signed state +
    session cookies, space = `github:<id>`). Needs the GitHub App created (owner) to go live.
-4. Passkey enroll + `userVerification`-every-time for all human actions; no human session
-   — **gates the owner acts (issue-active / store / rotate / unfreeze) for OAuth sessions; until
-   it lands, OAuth must stay off in any managed multi-tenant deploy.**
-5. Mint agent bearers (hashed, TTL'd, revocable, agent-scoped)
+4. **Passkey enroll + `userVerification`-every-time for all human actions; no human session**
+   — ✅ built (`src/webauthn.js`: WebAuthn register + per-action step-up; ES256/RS256, CBOR/COSE,
+   DER→raw, clone-counter check). Every owner act by an OAuth session (store / issue-active /
+   approve / rotate / mint-bearer) requires a fresh one-shot `X-Fort-Action` step-up token. Tested
+   end-to-end (`test/webauthn.test.mjs`). A self-host `FORT_KEY` bearer is an API token, not gated.
+5. **Mint agent bearers (hashed, TTL'd, revocable, agent-scoped)** — ✅ built (`src/agents.js`:
+   `/agents` mint/list/revoke; SHA-256 hash at rest, shown once, per-space resolve). Mint + revoke
+   are step-up-gated owner acts. Tested (`test/agents.test.mjs`).
 6. Two-tier secrets — autonomous (DEK) vs sovereign (passkey-PRF, host-blind)
-7. SSRF + header-injection hardening on `/use`; soft-cap note
+7. SSRF + header-injection hardening on `/use`; soft-cap note (last-mile ✅; single-worker `/use` ⬜)
 8. Approval + wake to the user's own repo (never the public one)
 9. The FML control plugin (drives the wallet API; holds no keys)
 10. ~~Split deploy — last-mile worker (decrypt+inject on the owner's infra); control plane plaintext-blind~~ ✅

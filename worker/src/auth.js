@@ -29,9 +29,9 @@
 //   secret SESSION_SECRET   (optional) HMAC key for signing cookies; self-mints into VAULT if unset
 
 const enc = new TextEncoder();
-const b64u = (buf) =>
+export const b64u = (buf) =>
   btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-const b64ud = (s) => {
+export const b64ud = (s) => {
   s = s.replace(/-/g, "+").replace(/_/g, "/");
   return Uint8Array.from(atob(s + "=".repeat((4 - (s.length % 4)) % 4)), (c) => c.charCodeAt(0));
 };
@@ -58,12 +58,13 @@ async function signingKey(env) {
 
 // A token is `<payload-b64url>.<hmac-b64url>`. Payload is JSON {space, login, exp}. Tamper-proof
 // (HMAC) and self-expiring (exp checked on verify), so it needs no server-side session store.
-async function sign(env, payload) {
+// Exported so other modules (passkey step-up, action tokens) sign/verify under the same key.
+export async function sign(env, payload) {
   const body = b64u(enc.encode(JSON.stringify(payload)));
   const mac = await crypto.subtle.sign("HMAC", await signingKey(env), enc.encode(body));
   return body + "." + b64u(mac);
 }
-async function verify(env, token) {
+export async function verify(env, token) {
   if (!token || token.indexOf(".") < 0) return null;
   const [body, macPart] = token.split(".");
   const ok = await crypto.subtle.verify("HMAC", await signingKey(env), b64ud(macPart), enc.encode(body)).catch(() => false);
@@ -74,7 +75,7 @@ async function verify(env, token) {
   return payload;
 }
 
-function readCookie(request, name) {
+export function readCookie(request, name) {
   const raw = request.headers.get("Cookie") || "";
   for (const part of raw.split(/;\s*/)) {
     const i = part.indexOf("=");
@@ -82,7 +83,7 @@ function readCookie(request, name) {
   }
   return null;
 }
-function setCookie(name, value, maxAgeSec) {
+export function setCookie(name, value, maxAgeSec) {
   // Host-only, Secure, HttpOnly, SameSite=Lax (Lax so the GitHub redirect back carries the state
   // cookie). maxAge 0 clears it.
   const bits = [`${name}=${encodeURIComponent(value)}`, "Path=/", "HttpOnly", "Secure", "SameSite=Lax"];

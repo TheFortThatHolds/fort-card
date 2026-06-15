@@ -29,3 +29,6 @@ kv_namespaces = [
 #    [vars]
 #    GH_CLIENT_ID  = "Iv1.xxxxxxxxxxxx"                              # the App's client id
 #    GH_CALLBACK_URL = "https://card.thefortthatholds.com/callback" # EXACT, must match the App
+#    WALLET_RPID   = "card.thefortthatholds.com"                    # passkey relying-party id (host)
+#    WALLET_ORIGIN = "https://card.thefortthatholds.com"            # passkey origin (scheme+host)
+#    # (WALLET_RPID/ORIGIN default to the request host/origin if unset — pin them in prod.)
