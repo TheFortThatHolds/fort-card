@@ -49,7 +49,7 @@ import { handleAuth, resolveSession, oauthConfigured, verify, readCookie } from 
 import { handlePasskey } from "./webauthn.js";
 import { resolveAgentBearer, mintAgentBearer, listAgents, revokeAgent } from "./agents.js";
 import { handleApp } from "./app.js";
-import { pushToOwner, addSubscription, removeSubscription, vapidPublicKey } from "./push.js";
+import { pushToOwner, addSubscription, removeSubscription, vapidPublicKey, listSubscriptions } from "./push.js";
 import { postComment, appConfigured, getInstallationOwner } from "./github-app.js";
 
 const enc = new TextEncoder();
@@ -344,6 +344,7 @@ export default {
         return json({
           usable_cards: usable,
           requestable_secrets: requestable,
+          push_subscriptions: (await listSubscriptions(env, aspace)).length,
           note: "Charge a usable card with /cards/:id/use. To get a new one: POST /agent/request {repo, pr, secret, allowed_hosts} — it lands pending for the owner to approve, then the wake-back posts to your PR.",
         });
       }
