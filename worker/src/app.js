@@ -177,7 +177,10 @@ let deferredPrompt=null;
 addEventListener('beforeinstallprompt',e=>{e.preventDefault();deferredPrompt=e;if(!standalone())$('#installbar').classList.remove('hide')});
 addEventListener('appinstalled',()=>{deferredPrompt=null;$('#installbar').classList.add('hide')});
 function maybeNudge(){if(standalone()&&'Notification'in window&&Notification.permission==='default')$('#notifbar').classList.remove('hide')}
-function showLock(who){$('#lockwho').textContent=who||me;$('#signin').classList.add('hide');$('#app').classList.add('hide');$('#lock').classList.remove('hide')}
+function showLock(who){$('#lockwho').textContent=who||me;$('#signin').classList.add('hide');$('#app').classList.add('hide');$('#lock').classList.remove('hide');if(standalone())setTimeout(tryAutoUnlock,200)}
+// In the installed PWA, the launch gives us activation — so pop the fingerprint on open, no button
+// tap first. If the browser declines (needs an explicit tap), the Unlock button is right there.
+async function tryAutoUnlock(){try{$('#lockmsg').textContent='Confirm on your device…';await passkeyAssert();showApp()}catch(_){$('#lockmsg').textContent=''}}
 
 async function enroll(){
   try{
