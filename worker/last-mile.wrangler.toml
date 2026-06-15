@@ -2,18 +2,30 @@ name = "fort-card-last-mile"
 main = "src/last-mile.js"
 compatibility_date = "2026-06-01"
 
-# The last-mile worker is STATELESS — no KV, no storage. It only decrypts and injects.
-# Deploy it to YOUR OWN Cloudflare account so the plaintext key never leaves your infrastructure.
+# The last-mile worker decrypts and injects on YOUR OWN Cloudflare account, so the plaintext key
+# never leaves your infrastructure. Deploy it via the "Deploy to Cloudflare" button (KV auto-
+# provisioned) or by hand:
 #
-# 1. Set the secrets (NEVER commit these):
-#      npx wrangler secret put MASTER_KEY     --config last-mile.wrangler.toml   # base64 of 32 random bytes: openssl rand -base64 32
-#      npx wrangler secret put LAST_MILE_KEY  --config last-mile.wrangler.toml   # a long random bearer the control plane will present
+# 1. Create the KV namespace and paste its id here:
+#      npx wrangler kv namespace create LM   --config last-mile.wrangler.toml
+kv_namespaces = [
+  { binding = "LM", id = "PASTE_YOUR_KV_NAMESPACE_ID_HERE" }
+]
 #
-# 2. Deploy:
+# 2. Deploy. The worker MINTS its own MASTER_KEY + LAST_MILE_KEY on first boot — you set nothing:
 #      npx wrangler deploy --config last-mile.wrangler.toml
 #
-# 3. Hand the deployed URL + LAST_MILE_KEY to the control plane (the managed/self-host worker):
-#      npx wrangler secret put LAST_MILE_URL  # https://fort-card-last-mile.<you>.workers.dev
-#      npx wrangler secret put LAST_MILE_KEY  # the same bearer
-#    With those two set, the control plane stops decrypting locally and relays ciphertext here.
-#    Its MASTER_KEY can then be REMOVED — it no longer needs (and should not hold) the root key.
+# 3. Claim the connect credentials ONCE (first call wins — do it right after deploy):
+#      curl https://fort-card-last-mile.<you>.workers.dev/bootstrap
+#    Paste the returned last_mile_url + last_mile_key into the control plane:
+#      npx wrangler secret put LAST_MILE_URL    # the url it returned
+#      npx wrangler secret put LAST_MILE_KEY    # the key it returned
+#    Then REMOVE the control plane's MASTER_KEY — it no longer needs (or should hold) the root key.
+#
+# 4. (optional) Back up the root key offline so a wiped KV can't strand your secrets:
+#      curl -H "Authorization: Bearer <LAST_MILE_KEY>" https://.../recovery
+#
+# Bring-your-own (advanced / migration): set MASTER_KEY and/or LAST_MILE_KEY as Worker secrets and
+# the worker uses those instead of minting. NEVER commit secret values.
+#      npx wrangler secret put MASTER_KEY     --config last-mile.wrangler.toml   # base64 of 32 random bytes
+#      npx wrangler secret put LAST_MILE_KEY  --config last-mile.wrangler.toml

@@ -3,38 +3,46 @@
 // This is the thin, stateless half of a SPLIT deployment. Its one job is the last mile of a
 // charge: take a SEALED secret, open it with the LOCAL master key, inject it into a single
 // outbound request, and return only the response. It runs on the SECRET OWNER's own Cloudflare
-// account and holds the owner's MASTER_KEY (the KEK). It holds NO long-term state — no cards,
-// no statement, no UI, no secret storage. It is pure crypto + one fetch.
+// account and holds the owner's MASTER_KEY (the KEK).
 //
-// WHY IT EXISTS. In a single-worker deploy, the same worker that stores the vault also decrypts
-// and injects the key — so whoever operates that worker sees the plaintext key at injection
-// time. That's fine for SELF-HOST (you are the operator). It is NOT fine for a MANAGED service:
-// the operator would see your keys. Splitting the last mile out fixes that cryptographically:
+// SELF-MINTING KEYS — nobody ever types or sees the root key. On first boot the worker MINTS
+// its own MASTER_KEY and LAST_MILE_KEY (cryptographic randomness, not a human guess) and stores
+// them in its own KV. A human never pastes a key into a deploy box, so a key never lands in a
+// clipboard / shell history / screenshot. The KEK lives in THIS worker's KV; the ciphertext it
+// opens lives in the CONTROL PLANE's KV — a different account — so the key and the data it
+// protects are never co-located. (Advanced: set MASTER_KEY / LAST_MILE_KEY as Worker secrets and
+// the worker uses those instead, never minting — for bring-your-own-key / migration.)
 //
-//   • CONTROL PLANE (the managed worker, src/worker.js with LAST_MILE_URL set) holds ONLY
-//     ciphertext — sealed secrets, KEK-wrapped DEKs, cards, the statement. It has NO MASTER_KEY,
-//     so it CANNOT decrypt anything. It can only relay ciphertext here.
+// WHY THE SPLIT EXISTS. In a single-worker deploy the same worker that stores the vault also
+// decrypts and injects the key — so whoever operates it sees plaintext at injection time. Fine
+// for SELF-HOST (you are the operator); NOT fine for a MANAGED service. Splitting the last mile
+// out fixes that cryptographically:
+//   • CONTROL PLANE (src/worker.js with LAST_MILE_URL set) holds ONLY ciphertext — sealed
+//     secrets, KEK-wrapped DEKs, cards, the statement. No MASTER_KEY → it CANNOT decrypt.
 //   • LAST-MILE WORKER (this file, on the OWNER's Cloudflare) holds MASTER_KEY. It opens the
-//     ciphertext, injects the key, makes the call, returns the response — all on the owner's
-//     own infrastructure. The control-plane operator never holds the plaintext.
+//     ciphertext, injects the key, makes the call, returns the response — all on the owner's box.
 //
 // The envelope format is identical to the main worker (AES-256-GCM; per-space DEK wrapped under
-// the KEK), so a secret sealed by either side opens on the other. The control plane sends the
-// sealed secret and — if the secret carries a keyRef — the KEK-wrapped DEK alongside it; this
-// worker unwraps the DEK with MASTER_KEY, opens the secret, and is done.
+// the KEK), so a secret sealed by either side opens on the other.
 //
-// One file, no dependencies, runs on Cloudflare Workers. Deploy it to YOUR account, hand its
-// URL + a shared bearer (LAST_MILE_KEY) to the control plane, and your keys never leave home.
+// One file, runs on Cloudflare Workers.
 //
-// HTTP API (all routes require  Authorization: Bearer <LAST_MILE_KEY>):
+// HTTP API:
 //   GET    /                                                 identity / health
+//   GET    /bootstrap                                        FIRST-CALL-WINS: returns the connect
+//                                                            credentials (url + LAST_MILE_KEY) once,
+//                                                            then seals. How you link this worker
+//                                                            to the control plane right after deploy.
+//   GET    /recovery        (Bearer LAST_MILE_KEY)           reveal the MASTER_KEY for offline backup
 //   POST   /seal     {plaintext, dek?}                       seal a value → {iv, ct}
 //   POST   /charge   {secret, dek?, request, header, ...}    decrypt + inject + fetch → response
 //   POST   /rotate   {secrets[], dek?}                       mint a fresh DEK, re-seal every secret
+//   (all but / and /bootstrap require  Authorization: Bearer <LAST_MILE_KEY>)
 //
 // Bindings (see last-mile.wrangler.toml):
-//   secret `MASTER_KEY`     base64 of 32 random bytes:  openssl rand -base64 32   (the KEK — yours)
-//   secret `LAST_MILE_KEY`  the shared bearer the control plane presents to call this worker
+//   KV namespace `LM`         the worker's own key store (holds ONLY its minted keys — never ciphertext)
+//   secret `MASTER_KEY`       (optional) bring-your-own KEK; if unset the worker mints + stores one
+//   secret `LAST_MILE_KEY`    (optional) bring-your-own bearer; if unset the worker mints + stores one
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
@@ -43,9 +51,24 @@ const b64d = (s) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
 const json = (o, status = 200) =>
   new Response(JSON.stringify(o, null, 2), { status, headers: { "Content-Type": "application/json" } });
 
+// ── self-minting key resolution: a Worker secret wins (bring-your-own); else read the minted key
+// from KV; else MINT one (32 random bytes), store it, and use it. Idempotent — first boot mints,
+// every boot after reads. The customer never sees or supplies anything. ──
+async function mintedSecret(env, name, bytes = 32) {
+  if (env[name]) return env[name]; // bring-your-own beats minting
+  if (!env.LM) throw new Error("no KV binding `LM` and no " + name + " secret — cannot mint or load the key");
+  const existing = await env.LM.get("key:" + name);
+  if (existing) return existing;
+  const value = b64e(crypto.getRandomValues(new Uint8Array(bytes)).buffer);
+  await env.LM.put("key:" + name, value);
+  return value;
+}
+const masterKeyB64 = (env) => mintedSecret(env, "MASTER_KEY", 32);
+const lastMileToken = (env) => mintedSecret(env, "LAST_MILE_KEY", 32);
+
 // ── envelope crypto — same shape as the control plane ──
 async function kek(env) {
-  return crypto.subtle.importKey("raw", b64d(env.MASTER_KEY), { name: "AES-GCM" }, false, ["encrypt", "decrypt"]);
+  return crypto.subtle.importKey("raw", b64d(await masterKeyB64(env)), { name: "AES-GCM" }, false, ["encrypt", "decrypt"]);
 }
 async function importRaw(raw) {
   return crypto.subtle.importKey("raw", raw, { name: "AES-GCM" }, false, ["encrypt", "decrypt"]);
@@ -88,8 +111,9 @@ function ssrfBlocked(host) {
 
 export default {
   async fetch(request, env) {
-    if (!env.MASTER_KEY || !env.LAST_MILE_KEY) {
-      return json({ error: "server not configured — set MASTER_KEY and LAST_MILE_KEY secrets" }, 500);
+    // Either a KV binding to mint into, or both keys supplied as secrets. Otherwise we can't run.
+    if (!env.LM && (!env.MASTER_KEY || !env.LAST_MILE_KEY)) {
+      return json({ error: "server not configured — bind a KV namespace `LM` (keys self-mint) or set MASTER_KEY + LAST_MILE_KEY secrets" }, 500);
     }
     const url = new URL(request.url);
     const path = url.pathname.replace(/\/+$/, "") || "/";
@@ -98,18 +122,44 @@ export default {
       return json({ name: "fort-card-last-mile", ok: true, role: "decrypt+inject on the owner's own infra" });
     }
 
-    // Single shared bearer: the control plane presents it on every call. This worker trusts the
-    // caller to have already enforced card rules (frozen/expired/limit/host) — its own guarantee
-    // is narrower and non-negotiable: it never returns a decrypted key, only the upstream response,
-    // and it refuses SSRF targets.
-    if ((request.headers.get("Authorization") || "") !== "Bearer " + env.LAST_MILE_KEY) {
+    // ── /bootstrap — FIRST-CALL-WINS connect credentials. Right after deploy, the owner fetches
+    // this ONCE to get the worker URL + LAST_MILE_KEY to paste into the control plane. It then
+    // seals permanently (a KV flag), so the credential can't be re-read off a public URL later.
+    // Whoever claims first owns the link — deploy and claim immediately. (The GitHub-App handshake
+    // will later broker this server-to-server and remove the manual claim + the race entirely.) ──
+    if (path === "/bootstrap" && request.method === "GET") {
+      if (env.MASTER_KEY && env.LAST_MILE_KEY) return json({ error: "bring-your-own keys set; no bootstrap needed" }, 400);
+      if (!env.LM) return json({ error: "no KV binding" }, 500);
+      if (await env.LM.get("bootstrap:sealed")) return json({ error: "bootstrap already claimed (one-time)" }, 410);
+      const token = await lastMileToken(env);
+      await masterKeyB64(env); // ensure the KEK is minted now too
+      await env.LM.put("bootstrap:sealed", new Date().toISOString());
+      return json({
+        last_mile_url: url.origin,
+        last_mile_key: token,
+        note: "Paste these into the control plane as LAST_MILE_URL + LAST_MILE_KEY, then remove the control plane's MASTER_KEY. This is the only time these are shown.",
+      });
+    }
+
+    // Single shared bearer (minted or bring-your-own). The control plane presents it on every call.
+    if ((request.headers.get("Authorization") || "") !== "Bearer " + (await lastMileToken(env))) {
       return json({ error: "unauthorized" }, 401);
     }
+
+    // ── /recovery — reveal the MASTER_KEY for offline disaster-recovery backup. Gated by the
+    // bearer (only the linked owner holds it). Optional: a normal user never needs this; a careful
+    // one stashes it so a wiped KV doesn't strand their sealed secrets. ──
+    if (path === "/recovery" && request.method === "GET") {
+      return json({
+        master_key: await masterKeyB64(env),
+        warning: "This is your root key. If your worker's KV is ever wiped, this restores it. Store it offline (NOT in a screenshot). Anyone with this key can decrypt your secrets.",
+      });
+    }
+
     const body = request.method === "GET" ? {} : await request.json().catch(() => ({}));
 
     // ── seal a plaintext value under the owner's active DEK (or the KEK if none) → ciphertext the
-    // control plane stores. Plaintext is sealed HERE, on the owner's infra; the control plane only
-    // ever persists what comes back. ──
+    // control plane stores. Plaintext is sealed HERE, on the owner's infra. ──
     if (path === "/seal" && request.method === "POST") {
       if (typeof body.plaintext !== "string") return json({ error: "plaintext (string) required" }, 400);
       const sealed = await sealWith(await openKey(env, body.dek || null), body.plaintext);
