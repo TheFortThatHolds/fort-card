@@ -4,7 +4,7 @@
 
 **Just want it to work?** → **[Get your Fort Card →](https://card.thefortthatholds.com/login)** — $8/mo, zero setup, your vault in 30 seconds.
 
-**Rather run your own?** → [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/TheFortThatHolds/fort-card) — MIT, your infrastructure, your keys, no one in the loop but you.
+**Rather run your own?** → [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/TheFortThatHolds/fort-card/tree/main/worker) — MIT, your infrastructure, your keys, no one in the loop but you.
 
 ---
 

@@ -1,33 +1,22 @@
 name = "fort-card"
 main = "src/worker.js"
 compatibility_date = "2026-06-01"
-# Keep secrets (GH_CLIENT_SECRET, MASTER_KEY) set on the Worker across deploys.
+# Keep secrets/vars set on the Worker across deploys (a redeploy never wipes MASTER_KEY etc).
 keep_vars = true
 
+# The vault.
+#  • Deploy-button self-host: Cloudflare provisions a fresh namespace and binds it here.
+#  • Operator's managed deploy: the GitHub Actions workflow swaps the real id into the placeholder.
 kv_namespaces = [
   { binding = "VAULT", id = "PASTE_YOUR_KV_NAMESPACE_ID_HERE" }
 ]
 
-# Custom domain — Cloudflare binds this on deploy.
-routes = [
-  { pattern = "card.thefortthatholds.com", custom_domain = true }
-]
-
-# Non-secret identity config (a client id is public by design; the domain is public).
-# Secrets live on the Worker, never here. Forking for your own instance? Change these four
-# and the route above to your domain + GitHub App client id.
-[vars]
-GH_CLIENT_ID = "Iv23liaQG8mlnPo1VTl2"
-GH_CALLBACK_URL = "https://card.thefortthatholds.com/callback"
-WALLET_RPID = "card.thefortthatholds.com"
-WALLET_ORIGIN = "https://card.thefortthatholds.com"
-GH_APP_ID = "4056461"
-# Billing runs THROUGH A CARD, never a raw key. OPERATOR_SPACE is the operator's space; the operator
-# issues one Stripe card there (allowed host api.stripe.com) and the worker does every Stripe call by
-# charging it — the key is injected server-side, never read by billing. Billing stays OFF until that
-# card exists, so this is safe to ship empty: issue the card and the $8/mo door turns on (no redeploy).
-# Freeze the card to stop billing. ToS is Stripe Checkout's native consent (URL set in Stripe settings).
-OPERATOR_SPACE = "github:208725367"
-SUBSCRIPTION_PRICE_CENTS = "800"
-SUBSCRIPTION_CURRENCY = "usd"
-SUBSCRIPTION_PRODUCT_NAME = "Fort Card"
+# ── No domain route and no identity [vars] live in this template ON PURPOSE. ──
+# This is what the "Deploy to Cloudflare" button deploys: a stranger gets a working vault on
+# their own *.workers.dev in single-token mode — set MASTER_KEY + FORT_KEY (see .dev.vars.example)
+# and it runs. OAuth login and $8/mo billing stay off until they wire up their own GitHub App.
+#
+# The operator's managed instance (card.thefortthatholds.com) is NOT configured here — its domain,
+# GitHub App, and billing are injected at deploy time by .github/workflows/deploy.yml, sourced from
+# repo Actions Variables (with the operator's current values as fallback). So this file stays a clean
+# template and production comes out identical.

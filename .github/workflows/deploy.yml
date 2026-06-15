@@ -8,11 +8,14 @@ name: deploy
 #   CLOUDFLARE_API_TOKEN   use Cloudflare's "Edit Cloudflare Workers" token template + your zone
 #   CLOUDFLARE_ACCOUNT_ID  Cloudflare dashboard, right sidebar
 #   GH_CLIENT_SECRET       the GitHub App's client secret
-# Variables (Settings → Actions → Variables):
+# Variables (Settings → Actions → Variables) — all optional; each falls back to the operator's
+# current value so a deploy works with none of them set:
 #   GH_CLIENT_ID           the GitHub App's client id (Iv23…)
 #   WALLET_DOMAIN          e.g. card.example.com  (callback/rpid/origin are derived from it)
-# Subscriptions turn on with NO key here: set OPERATOR_SPACE in wrangler.toml and issue ONE Stripe
-# card in that space's wallet (allowed host api.stripe.com). The worker bills by charging that card.
+#   GH_APP_ID              the wake-back GitHub App's numeric id
+#   OPERATOR_SPACE         the billing space, e.g. github:<id>
+# Subscriptions turn on with NO key here: with OPERATOR_SPACE set, issue ONE Stripe card in that
+# space's wallet (allowed host api.stripe.com) and the worker bills by charging that card.
 
 on:
   push:
@@ -48,6 +51,36 @@ jobs:
           test -n "$id"
           sed -i "s|PASTE_YOUR_KV_NAMESPACE_ID_HERE|$id|" wrangler.toml
           echo "KV namespace bound."
+
+      - name: Inject operator instance config (domain + GitHub App + billing)
+        # The committed wrangler.toml is a clean self-host template (no domain, no identity vars) so
+        # the "Deploy to Cloudflare" button works for strangers. Here we append the operator's managed
+        # config for card.thefortthatholds.com. Each value comes from a repo Actions Variable, falling
+        # back to the current production value so this deploy is byte-identical even with nothing set.
+        run: |
+          set -e
+          DOMAIN="${{ vars.WALLET_DOMAIN }}";     DOMAIN="${DOMAIN:-card.thefortthatholds.com}"
+          CLIENT_ID="${{ vars.GH_CLIENT_ID }}";   CLIENT_ID="${CLIENT_ID:-Iv23liaQG8mlnPo1VTl2}"
+          APP_ID="${{ vars.GH_APP_ID }}";         APP_ID="${APP_ID:-4056461}"
+          OP_SPACE="${{ vars.OPERATOR_SPACE }}";  OP_SPACE="${OP_SPACE:-github:208725367}"
+          cat >> wrangler.toml <<EOF
+
+# ── injected at deploy for the operator's managed instance (not in the committed template) ──
+routes = [
+  { pattern = "$DOMAIN", custom_domain = true }
+]
+[vars]
+GH_CLIENT_ID = "$CLIENT_ID"
+GH_CALLBACK_URL = "https://$DOMAIN/callback"
+WALLET_RPID = "$DOMAIN"
+WALLET_ORIGIN = "https://$DOMAIN"
+GH_APP_ID = "$APP_ID"
+OPERATOR_SPACE = "$OP_SPACE"
+SUBSCRIPTION_PRICE_CENTS = "800"
+SUBSCRIPTION_CURRENCY = "usd"
+SUBSCRIPTION_PRODUCT_NAME = "Fort Card"
+EOF
+          echo "Operator instance config injected for $DOMAIN."
 
       - name: Deploy
         run: $WR deploy
