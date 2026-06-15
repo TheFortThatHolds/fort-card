@@ -285,9 +285,14 @@ async function refreshPushState(){
     if(!supported||Notification.permission==='denied'){if(card)card.classList.add('hide');if(bar)bar.classList.add('hide');return}
     const reg=await navigator.serviceWorker.ready.catch(()=>null);
     const sub=reg?await reg.pushManager.getSubscription():null;
-    if(sub){if(card)card.classList.add('hide');if(bar)bar.classList.add('hide');return} // truly on → hide
-    // NOT actually subscribed (even if permission was granted) → show the control so it can be
-    // turned on and any error surfaces. This is the fix: don't hide just because permission exists.
+    if(sub){
+      // The browser has a subscription — make sure the SERVER actually has it too. This heals the
+      // "browser subscribed but server has 0" case that left pushes dead and the button hidden.
+      try{await jget('/push/subscribe',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({subscription:sub.toJSON()})});if(card)card.classList.add('hide');if(bar)bar.classList.add('hide')}
+      catch(e){if(card){card.classList.remove('hide');$('#pushbtn').textContent='Fix notifications';$('#pushbtn').disabled=false}}
+      return;
+    }
+    // no browser subscription → show the control to turn it on (errors surface on tap)
     if(card){card.classList.remove('hide');$('#pushbtn').textContent=Notification.permission==='granted'?'Turn on notifications':'Enable';$('#pushbtn').disabled=false}
   }catch(_){}
 }
