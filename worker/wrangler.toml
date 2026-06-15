@@ -16,7 +16,7 @@ kv_namespaces = [
 # their own *.workers.dev in single-token mode — set MASTER_KEY + FORT_KEY (see .dev.vars.example)
 # and it runs. OAuth login and $8/mo billing stay off until they wire up their own GitHub App.
 #
-# The operator's managed instance (card.thefortthatholds.com) is NOT configured here — its domain,
+# The operator's managed (hosted) instance is NOT configured here — its domain,
 # GitHub App, and billing are injected at deploy time by .github/workflows/deploy.yml, sourced from
 # repo Actions Variables (with the operator's current values as fallback). So this file stays a clean
 # template and production comes out identical.

@@ -55,31 +55,41 @@ jobs:
       - name: Inject operator instance config (domain + GitHub App + billing)
         # The committed wrangler.toml is a clean self-host template (no domain, no identity vars) so
         # the "Deploy to Cloudflare" button works for strangers. Here we append the operator's managed
-        # config for card.thefortthatholds.com. Each value comes from a repo Actions Variable, falling
-        # back to the current production value so this deploy is byte-identical even with nothing set.
+        # config for the hosted instance. Every value comes from a repo Actions Variable — NONE of the
+        # operator's data lives in the repo. If a required Variable is missing we FAIL the deploy (the
+        # running Worker keeps serving) rather than ship a broken config.
+        env:
+          DOMAIN: ${{ vars.WALLET_DOMAIN }}
+          CLIENT_ID: ${{ vars.GH_CLIENT_ID }}
+          APP_ID: ${{ vars.GH_APP_ID }}
+          OP_SPACE: ${{ vars.OPERATOR_SPACE }}
         run: |
           set -e
-          DOMAIN="${{ vars.WALLET_DOMAIN }}";     DOMAIN="${DOMAIN:-card.thefortthatholds.com}"
-          CLIENT_ID="${{ vars.GH_CLIENT_ID }}";   CLIENT_ID="${CLIENT_ID:-Iv23liaQG8mlnPo1VTl2}"
-          APP_ID="${{ vars.GH_APP_ID }}";         APP_ID="${APP_ID:-4056461}"
-          OP_SPACE="${{ vars.OPERATOR_SPACE }}";  OP_SPACE="${OP_SPACE:-github:208725367}"
-          cat >> wrangler.toml <<EOF
-
-# ── injected at deploy for the operator's managed instance (not in the committed template) ──
-routes = [
-  { pattern = "$DOMAIN", custom_domain = true }
-]
-[vars]
-GH_CLIENT_ID = "$CLIENT_ID"
-GH_CALLBACK_URL = "https://$DOMAIN/callback"
-WALLET_RPID = "$DOMAIN"
-WALLET_ORIGIN = "https://$DOMAIN"
-GH_APP_ID = "$APP_ID"
-OPERATOR_SPACE = "$OP_SPACE"
-SUBSCRIPTION_PRICE_CENTS = "800"
-SUBSCRIPTION_CURRENCY = "usd"
-SUBSCRIPTION_PRODUCT_NAME = "Fort Card"
-EOF
+          missing=
+          for v in DOMAIN CLIENT_ID APP_ID OP_SPACE; do
+            [ -n "${!v}" ] || missing="$missing $v"
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::Missing required Actions Variable(s):$missing — set WALLET_DOMAIN, GH_CLIENT_ID, GH_APP_ID, OPERATOR_SPACE (Settings → Secrets and variables → Actions → Variables). Aborting; the live Worker is untouched."
+            exit 1
+          fi
+          {
+            echo ""
+            echo "# ── injected at deploy for the operator's managed instance (not in the committed template) ──"
+            echo "routes = ["
+            echo "  { pattern = \"$DOMAIN\", custom_domain = true }"
+            echo "]"
+            echo "[vars]"
+            echo "GH_CLIENT_ID = \"$CLIENT_ID\""
+            echo "GH_CALLBACK_URL = \"https://$DOMAIN/callback\""
+            echo "WALLET_RPID = \"$DOMAIN\""
+            echo "WALLET_ORIGIN = \"https://$DOMAIN\""
+            echo "GH_APP_ID = \"$APP_ID\""
+            echo "OPERATOR_SPACE = \"$OP_SPACE\""
+            echo "SUBSCRIPTION_PRICE_CENTS = \"800\""
+            echo "SUBSCRIPTION_CURRENCY = \"usd\""
+            echo "SUBSCRIPTION_PRODUCT_NAME = \"Fort Card\""
+          } >> wrangler.toml
           echo "Operator instance config injected for $DOMAIN."
 
       - name: Deploy
