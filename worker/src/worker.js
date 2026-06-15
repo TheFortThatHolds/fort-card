@@ -280,7 +280,8 @@ async function chargeCard(env, space, card, req) {
   }
   card.used++;
   await env.VAULT.put(K(space, "card", card.id), JSON.stringify(card));
-  await logEvent(env, space, "card.charge", { id: card.id, host, status: resp.status });
+  // provenance: who charged, where, to what host, and where they're left on the cap.
+  await logEvent(env, space, "card.charge", { id: card.id, holder: card.holder || null, host, method: req.method || "GET", status: resp.status, used: card.used, limit: card.limit ?? null });
   return { authorized: true, status: resp.status, body: out, card: { id: card.id, used: card.used, remaining: card.limit != null ? Math.max(0, card.limit - card.used) : null } };
 }
 
@@ -351,6 +352,12 @@ export default {
       if (!b.secret || !Array.isArray(b.allowed_hosts) || !b.allowed_hosts.length) {
         return json({ error: "secret and a non-empty allowed_hosts array are required" }, 400);
       }
+      // A request MUST declare how many charges it needs — no open-ended cards via the agent path.
+      // The owner approves that exact cap; each charge is logged. Spent at the cap, then declined.
+      const charges = Number(b.charges != null ? b.charges : b.limit);
+      if (!Number.isInteger(charges) || charges < 1) {
+        return json({ error: "charges required: a positive integer (how many times you'll use this card). Open-ended cards can't be requested." }, 400);
+      }
       const rid = "card_" + crypto.randomUUID().slice(0, 8);
       const reqCard = {
         id: rid,
@@ -360,7 +367,7 @@ export default {
         allowed_hosts: b.allowed_hosts.map(String),
         header: "Authorization",
         header_prefix: "Bearer ",
-        limit: typeof b.limit === "number" ? b.limit : null,
+        limit: charges,
         used: 0,
         expires_at: null,
         frozen: true,
