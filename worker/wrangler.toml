@@ -1,6 +1,10 @@
 name = "fort-card"
 main = "src/worker.js"
 compatibility_date = "2026-06-01"
+# Preserve vars + secrets set in the Cloudflare dashboard across deploys, so a push never wipes
+# this instance's GH_CLIENT_ID / GH_CLIENT_SECRET / MASTER_KEY / etc. They live on the Worker, not
+# in this public template.
+keep_vars = true
 
 # 1. Create a KV namespace and paste its id here:
 #      npx wrangler kv namespace create VAULT
