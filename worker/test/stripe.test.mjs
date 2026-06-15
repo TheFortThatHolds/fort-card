@@ -84,10 +84,9 @@ const realFetch = globalThis.fetch;
   ok(!unpaid.subscribed, "confirm rejects an unpaid session");
 }
 
-// isSubscribed: comp via OPERATOR_SPACE; cache-until-period-end; re-query when expired
+// isSubscribed: no free pass; cache-until-period-end; re-query when expired
 {
-  const env = { STRIPE_KEY: "sk", VAULT: kv(), OPERATOR_SPACE: "github:1" };
-  ok(await isSubscribed(env, "github:1"), "OPERATOR_SPACE is comped");
+  const env = { STRIPE_KEY: "sk", VAULT: kv() };
   ok(!(await isSubscribed(env, "github:2")), "a space with no record is not subscribed");
 
   await env.VAULT.put("github:2:billing", JSON.stringify({ subscription: "sub_2", status: "active", current_period_end: Math.floor(Date.now() / 1000) + 99999 }));

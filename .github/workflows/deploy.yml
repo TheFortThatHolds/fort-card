@@ -8,12 +8,16 @@ name: deploy
 #   CLOUDFLARE_API_TOKEN   use Cloudflare's "Edit Cloudflare Workers" token template + your zone
 #   CLOUDFLARE_ACCOUNT_ID  Cloudflare dashboard, right sidebar
 #   GH_CLIENT_SECRET       the GitHub App's client secret
-#   STRIPE_KEY             (optional) Stripe secret key → turns on subscriptions. Mint a RESTRICTED
-#                          key scoped to: Products (write), Prices (write), Checkout Sessions (write),
-#                          Subscriptions (read). Unset = billing off (pure self-host).
+#   STRIPE_KEY             (optional FALLBACK) Stripe key as a Worker secret. Prefer OPERATOR_SPACE
+#                          below — the worker reads the Stripe key from your wallet's own vault, so
+#                          there's no key to paste here at all.
 # Variables (Settings → Actions → Variables):
 #   GH_CLIENT_ID           the GitHub App's client id (Iv23…)
 #   WALLET_DOMAIN          e.g. card.example.com  (callback/rpid/origin are derived from it)
+#   OPERATOR_SPACE         turns on subscriptions: your space (e.g. github:123) whose vault holds the
+#                          Stripe key. The worker opens it with MASTER_KEY at billing time. Unset =
+#                          billing off (pure self-host), unless STRIPE_KEY is set instead.
+#   STRIPE_KEY_SECRET      (optional) the vault secret name to read — default "stripe-agent-key"
 
 on:
   push:
@@ -51,7 +55,14 @@ jobs:
           echo "KV namespace bound."
 
       - name: Deploy
-        run: $WR deploy
+        env:
+          OPERATOR_SPACE: ${{ vars.OPERATOR_SPACE }}
+          STRIPE_KEY_SECRET: ${{ vars.STRIPE_KEY_SECRET }}
+        run: |
+          extra=""
+          [ -n "$OPERATOR_SPACE" ] && extra="$extra --var OPERATOR_SPACE:$OPERATOR_SPACE"
+          [ -n "$STRIPE_KEY_SECRET" ] && extra="$extra --var STRIPE_KEY_SECRET:$STRIPE_KEY_SECRET"
+          $WR deploy $extra
 
       - name: Set GH_CLIENT_SECRET (from repo secret; masked, never logged)
         env:
@@ -73,14 +84,14 @@ jobs:
             echo "GH_APP_PRIVATE_KEY not set yet — skipping (wake-back stays off until it is)."
           fi
 
-      - name: Set STRIPE_KEY (from repo secret; masked, never logged — the billing key)
+      - name: Set STRIPE_KEY (optional fallback; masked, never logged — prefer OPERATOR_SPACE vault key)
         env:
           SECRET: ${{ secrets.STRIPE_KEY }}
         run: |
           if [ -n "$SECRET" ]; then
             printf '%s' "$SECRET" | $WR secret put STRIPE_KEY
           else
-            echo "STRIPE_KEY not set yet — skipping (subscriptions stay off until it is)."
+            echo "STRIPE_KEY not set — fine; billing uses the OPERATOR_SPACE vault key instead."
           fi
 
       - name: Mint MASTER_KEY once if absent (random, on the runner; a Worker secret, never KV)

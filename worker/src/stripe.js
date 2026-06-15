@@ -11,14 +11,20 @@
 // but can't store, issue, charge, or let an agent use it. Self-host leaves STRIPE_KEY unset → billing
 // is OFF and nothing is ever gated (the FORT_KEY owner never pays the SaaS operator).
 //
+// The billing key comes from the wallet's OWN vault by default — the wallet pays for itself out of
+// the key it already holds. Set OPERATOR_SPACE to the operator's space and the worker reads the
+// Stripe key from that space's vault secret (STRIPE_KEY_SECRET, default "stripe-agent-key"), opening
+// it with MASTER_KEY server-side — never a repo secret. A Worker secret STRIPE_KEY still works as a
+// fallback for a pure self-host that would rather not put the key in the vault. (Resolution + the
+// vault read live in worker.js; this module just receives env.STRIPE_KEY already populated.)
+//
 // Config (Worker vars/secrets — operator of a managed instance):
-//   secret STRIPE_KEY              the operator's Stripe secret key (mint a restricted key scoped to
-//                                  Products + Prices write, Checkout Sessions write, Subscriptions read)
+//   var    OPERATOR_SPACE          the operator's space (e.g. github:123) whose vault holds the key
+//   var    STRIPE_KEY_SECRET       (optional) the vault secret name — default "stripe-agent-key"
+//   secret STRIPE_KEY              (optional fallback) the Stripe key as a Worker secret instead
 //   var    SUBSCRIPTION_PRICE_CENTS  (optional) monthly price in cents — default 800 ($8)
 //   var    SUBSCRIPTION_CURRENCY     (optional) ISO currency — default "usd"
 //   var    SUBSCRIPTION_PRODUCT_NAME (optional) the product's display name — default "Fort Card"
-//   var    OPERATOR_SPACE            (optional) a space comped as always-subscribed (e.g. the operator's
-//                                    own space) — leave unset to make everyone, including you, pay.
 
 export function billingEnabled(env) {
   return !!env.STRIPE_KEY;
@@ -133,10 +139,10 @@ export async function confirmCheckout(env, space, sessionId) {
   return { subscribed: true, ...rec };
 }
 
-// Is this space subscribed right now? OPERATOR_SPACE is comped. Otherwise trust the cached record
-// until its period end, then re-query Stripe once and re-cache. No record → not subscribed.
+// Is this space subscribed right now? Trust the cached record until its period end, then re-query
+// Stripe once and re-cache. No record → not subscribed. (The operator is a customer like anyone
+// else — they subscribe through the same Checkout; there's no free pass.)
 export async function isSubscribed(env, space) {
-  if (env.OPERATOR_SPACE && space === env.OPERATOR_SPACE) return true;
   const rec = await readBilling(env, space);
   if (!rec) return false;
   if (subActive(rec.status) && rec.current_period_end && Date.now() < rec.current_period_end * 1000) return true;
