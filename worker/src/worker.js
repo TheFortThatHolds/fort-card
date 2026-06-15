@@ -251,6 +251,39 @@ export function ssrfBlocked(host) {
   return false;
 }
 
+// ── charge a card in a space (the settle path, factored so /cards/:id/use and the agent path share
+// it): run the rules, inject the key server-side, return only the response. Mutates used + logs. ──
+async function chargeCard(env, space, card, req) {
+  const decline = async (reason) => { await logEvent(env, space, "card.decline", { id: card.id, reason }); return { authorized: false, decline_reason: reason }; };
+  if (card.pending) return decline("card pending owner approval");
+  if (card.frozen) return decline("card frozen");
+  if (card.expires_at && Date.parse(card.expires_at) < Date.now()) return decline("card expired");
+  if (card.limit != null && card.used >= card.limit) return decline("limit reached");
+  if (!req || !req.url) return decline("request url required");
+  let host;
+  try { host = new URL(req.url).host; } catch { return decline("bad url"); }
+  if (ssrfBlocked(host)) return decline(`host ${host} blocked (SSRF)`);
+  if (!card.allowed_hosts.includes(host)) return decline(`host ${host} not allowed for this card`);
+  const secRaw = await env.VAULT.get(K(space, "secret", card.secret));
+  if (!secRaw) return decline("secret missing from vault");
+  const sealed = JSON.parse(secRaw);
+  let resp, out;
+  if (splitMode(env)) {
+    const r = await callLastMile(env, "/charge", { secret: sealed, dek: await wrappedDEKFor(env, space, sealed.keyRef), header: card.header, header_prefix: card.header_prefix, request: { url: req.url, method: req.method || "GET", headers: req.headers || {}, body: req.body } });
+    resp = { status: r.status }; out = r.body;
+  } else {
+    const key = await decrypt(env, space, sealed);
+    const httpResp = await fetch(req.url, { method: req.method || "GET", headers: { ...(req.headers || {}), [card.header]: card.header_prefix + key }, body: req.body == null ? undefined : typeof req.body === "string" ? req.body : JSON.stringify(req.body) });
+    const text = await httpResp.text();
+    try { out = JSON.parse(text); } catch { out = text; }
+    resp = { status: httpResp.status };
+  }
+  card.used++;
+  await env.VAULT.put(K(space, "card", card.id), JSON.stringify(card));
+  await logEvent(env, space, "card.charge", { id: card.id, host, status: resp.status });
+  return { authorized: true, status: resp.status, body: out, card: { id: card.id, used: card.used, remaining: card.limit != null ? Math.max(0, card.limit - card.used) : null } };
+}
+
 export default {
   async fetch(request, env) {
     // Crypto must be available (MASTER_KEY, or a delegated last mile in split mode), and at least
@@ -281,7 +314,7 @@ export default {
     // Returns NAMES + hosts only, never key values. /request lands a PENDING card for the owner to
     // approve (push + wake-back). v1 gate = app-installed-on-repo; hardening (require repo-write
     // proof so randoms can't spam the queue) is the next layer. ──
-    if ((path === "/agent/discover" || path === "/agent/request") && request.method === "POST") {
+    if ((path === "/agent/discover" || path === "/agent/request" || path === "/agent/use") && request.method === "POST") {
       const b = await request.json().catch(() => ({}));
       if (!b.repo) return json({ error: "repo required (owner/name) — the repo you're working in" }, 400);
       if (!appConfigured(env)) return json({ error: "wallet not set up for app-based requests" }, 503);
@@ -307,6 +340,12 @@ export default {
           requestable_secrets: requestable,
           note: "Charge a usable card with /cards/:id/use. To get a new one: POST /agent/request {repo, pr, secret, allowed_hosts} — it lands pending for the owner to approve, then the wake-back posts to your PR.",
         });
+      }
+      if (path === "/agent/use") {
+        // charge a card the owner already approved in this space — the wake → use step.
+        const c = await env.VAULT.get(K(aspace, "card", String(b.card)), "json");
+        if (!c) return json({ error: "no such card in this space" }, 404);
+        return json(await chargeCard(env, aspace, c, b.request));
       }
       // /agent/request
       if (!b.secret || !Array.isArray(b.allowed_hosts) || !b.allowed_hosts.length) {
