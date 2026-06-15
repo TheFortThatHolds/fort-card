@@ -50,7 +50,7 @@ import { handlePasskey } from "./webauthn.js";
 import { resolveAgentBearer, mintAgentBearer, listAgents, revokeAgent } from "./agents.js";
 import { handleApp } from "./app.js";
 import { pushToOwner, addSubscription, removeSubscription, vapidPublicKey } from "./push.js";
-import { postComment, appConfigured } from "./github-app.js";
+import { postComment, appConfigured, getInstallationOwner } from "./github-app.js";
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
@@ -275,6 +275,65 @@ export default {
     // don't exist and handleAuth returns null — the self-host bearer path below is unchanged.
     const authResp = await handleAuth(request, env, url, path);
     if (authResp) return authResp;
+
+    // ── AGENT-FACING discovery + request. No wallet credential: the agent names the repo it's
+    // working in, and the Fort Wallet GitHub App being INSTALLED there resolves the owner's space.
+    // Returns NAMES + hosts only, never key values. /request lands a PENDING card for the owner to
+    // approve (push + wake-back). v1 gate = app-installed-on-repo; hardening (require repo-write
+    // proof so randoms can't spam the queue) is the next layer. ──
+    if ((path === "/agent/discover" || path === "/agent/request") && request.method === "POST") {
+      const b = await request.json().catch(() => ({}));
+      if (!b.repo) return json({ error: "repo required (owner/name) — the repo you're working in" }, 400);
+      if (!appConfigured(env)) return json({ error: "wallet not set up for app-based requests" }, 503);
+      let aspace;
+      try {
+        const o = await getInstallationOwner(env, b.repo);
+        aspace = "github:" + o.id;
+      } catch (e) {
+        return json({ error: (e && e.message) || ("Fort Wallet not installed on " + b.repo) }, 403);
+      }
+      if (path === "/agent/discover") {
+        const cardList = await env.VAULT.list({ prefix: K(aspace, "card", "") });
+        const usable = [];
+        for (const k of cardList.keys) {
+          const c = JSON.parse(await env.VAULT.get(k.name));
+          if (!c.pending && !c.frozen) usable.push({ id: c.id, name: c.name, allowed_hosts: c.allowed_hosts, remaining: c.limit != null ? Math.max(0, c.limit - c.used) : null });
+        }
+        const secPrefix = K(aspace, "secret", "");
+        const secList = await env.VAULT.list({ prefix: secPrefix });
+        const requestable = secList.keys.map((k) => k.name.slice(secPrefix.length));
+        return json({
+          usable_cards: usable,
+          requestable_secrets: requestable,
+          note: "Charge a usable card with /cards/:id/use. To get a new one: POST /agent/request {repo, pr, secret, allowed_hosts} — it lands pending for the owner to approve, then the wake-back posts to your PR.",
+        });
+      }
+      // /agent/request
+      if (!b.secret || !Array.isArray(b.allowed_hosts) || !b.allowed_hosts.length) {
+        return json({ error: "secret and a non-empty allowed_hosts array are required" }, 400);
+      }
+      const rid = "card_" + crypto.randomUUID().slice(0, 8);
+      const reqCard = {
+        id: rid,
+        name: b.label || "request from " + b.repo,
+        secret: String(b.secret),
+        holder: String(b.repo),
+        allowed_hosts: b.allowed_hosts.map(String),
+        header: "Authorization",
+        header_prefix: "Bearer ",
+        limit: typeof b.limit === "number" ? b.limit : null,
+        used: 0,
+        expires_at: null,
+        frozen: true,
+        pending: true,
+        wake: b.pr ? { repo: String(b.repo), pr: Number(b.pr) } : null,
+        created: new Date().toISOString(),
+      };
+      await env.VAULT.put(K(aspace, "card", rid), JSON.stringify(reqCard));
+      await logEvent(env, aspace, "card.request", { id: rid, name: reqCard.name, secret: reqCard.secret, allowed_hosts: reqCard.allowed_hosts, repo: b.repo });
+      await notifyCardRequest(env, aspace, reqCard);
+      return json({ ok: true, pending: true, card: rid, note: "Landed in the owner's wallet as a pending approval. They get a push; on approval the wake-back posts to your PR." });
+    }
 
     // WHO is calling, and WHICH space do they operate in?
     //   • OAuth session   → a verified SaaS tenant, operating in their OWN identity-born space.
