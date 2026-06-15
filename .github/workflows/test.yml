@@ -33,3 +33,5 @@ jobs:
         run: node test/push.test.mjs
       - name: GitHub App JWT
         run: node test/github-app.test.mjs
+      - name: Stripe billing
+        run: node test/stripe.test.mjs

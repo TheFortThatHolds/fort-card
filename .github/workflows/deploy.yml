@@ -8,6 +8,9 @@ name: deploy
 #   CLOUDFLARE_API_TOKEN   use Cloudflare's "Edit Cloudflare Workers" token template + your zone
 #   CLOUDFLARE_ACCOUNT_ID  Cloudflare dashboard, right sidebar
 #   GH_CLIENT_SECRET       the GitHub App's client secret
+#   STRIPE_KEY             (optional) Stripe secret key → turns on subscriptions. Mint a RESTRICTED
+#                          key scoped to: Products (write), Prices (write), Checkout Sessions (write),
+#                          Subscriptions (read). Unset = billing off (pure self-host).
 # Variables (Settings → Actions → Variables):
 #   GH_CLIENT_ID           the GitHub App's client id (Iv23…)
 #   WALLET_DOMAIN          e.g. card.example.com  (callback/rpid/origin are derived from it)
@@ -68,6 +71,16 @@ jobs:
             printf '%s' "$SECRET" | $WR secret put GH_APP_PRIVATE_KEY
           else
             echo "GH_APP_PRIVATE_KEY not set yet — skipping (wake-back stays off until it is)."
+          fi
+
+      - name: Set STRIPE_KEY (from repo secret; masked, never logged — the billing key)
+        env:
+          SECRET: ${{ secrets.STRIPE_KEY }}
+        run: |
+          if [ -n "$SECRET" ]; then
+            printf '%s' "$SECRET" | $WR secret put STRIPE_KEY
+          else
+            echo "STRIPE_KEY not set yet — skipping (subscriptions stay off until it is)."
           fi
 
       - name: Mint MASTER_KEY once if absent (random, on the runner; a Worker secret, never KV)

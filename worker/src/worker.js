@@ -44,6 +44,14 @@
 //   var    `FORT_SPACE`      (optional) the space for the owner/agent token (default "owner")
 //   var    `NOTIFY_WEBHOOK`  (optional) URL that gets a JSON POST when an agent requests a card
 //                            (best-effort; the hosted Core fans this out to email + web-push)
+//   secret `STRIPE_KEY`      (optional) turns on SUBSCRIPTIONS. The worker is the merchant — it
+//                            creates its own product/price/checkout with this key and confirms by
+//                            querying Stripe (no webhook, no dashboard button). Unset = billing off,
+//                            nothing is ever gated (pure self-host). See src/stripe.js for the vars.
+//
+// Monetization is binary and AT THE DOOR: when STRIPE_KEY is set, an OAuth tenant must hold an
+// active subscription before any wallet USE (store/issue/charge/approve/mint). They can still sign
+// in, see their empty space, and subscribe. Self-host (FORT_KEY) and agent tokens are never gated.
 
 import { handleAuth, resolveSession, oauthConfigured, verify, readCookie } from "./auth.js";
 import { handlePasskey } from "./webauthn.js";
@@ -51,6 +59,7 @@ import { resolveAgentBearer, mintAgentBearer, listAgents, revokeAgent } from "./
 import { handleApp } from "./app.js";
 import { pushToOwner, addSubscription, removeSubscription, vapidPublicKey, listSubscriptions } from "./push.js";
 import { postComment, appConfigured, getInstallationOwner } from "./github-app.js";
+import { billingEnabled, isSubscribed, createCheckout, confirmCheckout, recordConsent, priceCents, tosUrl } from "./stripe.js";
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
@@ -331,6 +340,11 @@ export default {
       } catch (e) {
         return json({ error: (e && e.message) || ("Fort Wallet not installed on " + b.repo) }, 403);
       }
+      // Billing is at the door for agents too: an agent may only touch a space whose owner is
+      // subscribed. Self-host (billing off) and a comped OPERATOR_SPACE pass straight through.
+      if (billingEnabled(env) && !(await isSubscribed(env, aspace))) {
+        return json({ error: "this space's Fort Card subscription is inactive — the owner must subscribe in the wallet", code: "subscribe_required" }, 402);
+      }
       if (path === "/agent/discover") {
         const cardList = await env.VAULT.list({ prefix: K(aspace, "card", "") });
         const usable = [];
@@ -432,11 +446,54 @@ export default {
     };
     const stepIfSession = async () => requireUnlock();
 
+    // ── BILLING GATE (DESIGN: monetization). At the door, after sign-in, before any wallet USE.
+    // Only applies to managed (OAuth-session) tenants when billing is configured — a self-host
+    // FORT_KEY/agent caller is never gated (they don't pay the SaaS operator). Reads stay open so
+    // an unsubscribed space can see its empty wallet and subscribe; acting routes call requireSub().
+    const billingOn = billingEnabled(env) && !!session;
+    const subscribed = billingOn ? await isSubscribed(env, space) : true;
+    const requireSub = () =>
+      subscribed ? null : json({ error: "subscription required — subscribe in the wallet to use it", code: "subscribe_required" }, 402);
+
     const body = request.method === "GET" ? {} : await request.json().catch(() => ({}));
+
+    // ── billing routes (session tenants). status is always safe to read; subscribe needs the
+    // customer to accept the terms; confirm verifies the Checkout return by querying Stripe. ──
+    if (path === "/billing/status" && request.method === "GET") {
+      return json({ enabled: billingEnabled(env), subscribed, price_cents: priceCents(env), tos_url: tosUrl(env) });
+    }
+    if (path === "/billing/subscribe" && request.method === "POST") {
+      if (!session) return json({ error: "sign in to subscribe" }, 401);
+      if (!billingEnabled(env)) return json({ error: "billing is not enabled on this instance" }, 400);
+      if (subscribed) return json({ ok: true, already_subscribed: true });
+      if (body.tos_accept !== true) return json({ error: "you must accept the terms to subscribe", tos_url: tosUrl(env) }, 400);
+      await recordConsent(env, space, tosUrl(env));
+      await logEvent(env, space, "billing.consent", { tos_url: tosUrl(env) });
+      try {
+        const { url: checkoutUrl, id } = await createCheckout(env, space, url.origin);
+        await logEvent(env, space, "billing.checkout", { session: id });
+        return json({ url: checkoutUrl });
+      } catch (e) {
+        return json({ error: (e && e.message) || "could not start checkout" }, 502);
+      }
+    }
+    if (path === "/billing/confirm" && request.method === "POST") {
+      if (!session) return json({ error: "sign in first" }, 401);
+      if (!billingEnabled(env)) return json({ subscribed: true });
+      if (!body.session_id) return json({ error: "session_id required" }, 400);
+      try {
+        const r = await confirmCheckout(env, space, body.session_id);
+        if (r.subscribed) await logEvent(env, space, "billing.active", { subscription: r.subscription });
+        return json(r);
+      } catch (e) {
+        return json({ error: (e && e.message) || "could not confirm checkout" }, 502);
+      }
+    }
 
     // ── agents: mint / list / revoke scoped bearers (mint + revoke are owner acts, step-up gated) ──
     if (path === "/agents" && request.method === "POST") {
       if (!human) return json({ error: HUMAN_REQUIRED }, 403);
+      { const g = requireSub(); if (g) return g; }
       const s = await stepIfSession("agent.mint");
       if (s) return s;
       const minted = await mintAgentBearer(env, space, { label: body.label, ttl_days: body.ttl_days });
@@ -486,6 +543,7 @@ export default {
     // ── store a secret (owner only — seeding a real key into the vault is a human act) ──
     if (path === "/secrets" && request.method === "POST") {
       if (!human) return json({ error: HUMAN_REQUIRED }, 403);
+      { const g = requireSub(); if (g) return g; }
       const s = await stepIfSession("secret.store");
       if (s) return s;
       if (!body.name || !body.value) return json({ error: "name and value required" }, 400);
@@ -509,6 +567,7 @@ export default {
     // agent token can never trigger it. The owner generates; only the owner commits. ──
     if (path === "/rotate" && request.method === "POST") {
       if (!human) return json({ error: HUMAN_REQUIRED }, 403);
+      { const g = requireSub(); if (g) return g; }
       const s = await stepIfSession("vault.rotate");
       if (s) return s;
       let res;
@@ -543,6 +602,7 @@ export default {
       if (!body.name || !body.secret || !Array.isArray(body.allowed_hosts) || body.allowed_hosts.length === 0) {
         return json({ error: "name, secret, and a non-empty allowed_hosts array are required" }, 400);
       }
+      { const g = requireSub(); if (g) return g; }
       const pending = !human; // an agent can ask, but never mint its own live allowance
       if (!pending) {
         // a human issuing an ACTIVE card is an owner act — fresh tap (sessions only).
@@ -619,6 +679,7 @@ export default {
         // a card — owner only — and unfreezing a PENDING card is how the owner approves it.
         if (!frozen && !human) return json({ error: HUMAN_REQUIRED }, 403);
         if (!frozen) {
+          const g = requireSub(); if (g) return g;
           const s = await stepIfSession("card.approve");
           if (s) return s;
         }
@@ -636,6 +697,7 @@ export default {
         return json({ revoked: id });
       }
       if (sub === "/use" && request.method === "POST") {
+        { const g = requireSub(); if (g) return g; }
         // authorize (ISO-8583 in spirit) — a decline is still a line on the statement
         const decline = async (reason) => {
           await logEvent(env, space, "card.decline", { id, reason });

@@ -8,6 +8,8 @@ const html = await handleApp({}, null, null, "/app").text();
 ok(html.includes('id="app"') && html.includes('id="signin"'), "renders the app + sign-in shells");
 ok(html.includes("/passkey/assert/begin") && html.includes('id="lock"'), "wires the unlock-to-open passkey gate");
 ok(html.includes("/login") && html.includes("/whoami"), "wires the OAuth login + whoami");
+ok(html.includes('id="gate"') && html.includes('id="tos"') && html.includes('id="toslink"'), "renders the subscribe gate with a ToS checkbox + link");
+ok(html.includes("/billing/status") && html.includes("/billing/subscribe") && html.includes("/billing/confirm"), "wires the billing status/subscribe/confirm flow");
 
 // the inline browser script must be syntactically valid (parse, don't execute)
 const script = html.match(/<script>([\s\S]*?)<\/script>/)[1];
