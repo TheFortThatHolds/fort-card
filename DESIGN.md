@@ -171,5 +171,12 @@ operator's box.
    credential header injected last. Tested (`test/ssrf.test.mjs`). Soft-cap under KV concurrency
    still noted (a hard cap needs a Durable Object).
 8. Approval + wake to the user's own repo (never the public one)
-9. The FML control plugin (drives the wallet API; holds no keys)
+9. **The wallet PWA + the FML plugin (one front-end, two shells)** — 🚧 the operational app
+   built (`src/app.js`: `/app` PWA — login, passkey enroll, cards/approvals, secrets, agents,
+   statement; mobile-first; browser-side WebAuthn paired with the server step-up). The **plugin
+   is the same page embedded by Fort Core in an iframe** (`?embed=1` trims chrome) — because the
+   iframe is the wallet's own origin, the session cookie + passkey ceremony work natively and the
+   Core holds no keys (glass, not authority). `CORE_ORIGIN` widens `frame-ancestors` so the Core
+   may frame it; the Core's iframe needs `allow="publickey-credentials-get"` for the approval tap.
+   Tested (`test/app.test.mjs`). Still ahead: the actual Core-side tile that mounts the iframe.
 10. ~~Split deploy — last-mile worker (decrypt+inject on the owner's infra); control plane plaintext-blind~~ ✅

@@ -27,3 +27,5 @@ jobs:
         run: node test/agents.test.mjs
       - name: SSRF guard
         run: node test/ssrf.test.mjs
+      - name: Wallet app render
+        run: node test/app.test.mjs

@@ -48,6 +48,7 @@
 import { handleAuth, resolveSession, oauthConfigured } from "./auth.js";
 import { handlePasskey, requireStepUp } from "./webauthn.js";
 import { resolveAgentBearer, mintAgentBearer, listAgents, revokeAgent } from "./agents.js";
+import { handleApp } from "./app.js";
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
@@ -234,6 +235,11 @@ export default {
     const path = url.pathname.replace(/\/+$/, "") || "/";
 
     if (path === "/") return json({ name: "fort-card", ok: true, docs: "https://github.com/TheFortThatHolds/fort-card" });
+
+    // The wallet PWA (and its manifest / service worker). Public HTML — the page itself drives
+    // auth via /whoami. This same page is what Fort Core embeds as the plugin (?embed=1).
+    const appResp = handleApp(env, request, url, path);
+    if (appResp) return appResp;
 
     // Identity routes (login / callback / logout / whoami). When OAuth is unconfigured these
     // don't exist and handleAuth returns null — the self-host bearer path below is unchanged.
