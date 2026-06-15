@@ -38,7 +38,11 @@ export function handleApp(env, request, url, path) {
   }
   if (path === "/app/sw.js") {
     return new Response(
-      `self.addEventListener('install',e=>self.skipWaiting());self.addEventListener('activate',e=>self.clients.claim());self.addEventListener('fetch',()=>{});`,
+      `self.addEventListener('install',e=>self.skipWaiting());
+self.addEventListener('activate',e=>self.clients.claim());
+self.addEventListener('fetch',()=>{});
+self.addEventListener('push',e=>{let d={};try{d=e.data?e.data.json():{}}catch(_){d={}}e.waitUntil(self.registration.showNotification(d.title||'Fort Wallet',{body:d.body||'',data:{url:d.url||'/app'},badge:undefined}))});
+self.addEventListener('notificationclick',e=>{e.notification.close();const u=(e.notification.data&&e.notification.data.url)||'/app';e.waitUntil(self.clients.matchAll({type:'window',includeUncontrolled:true}).then(ws=>{for(const w of ws){if(w.url.indexOf('/app')>=0){return w.focus()}}return self.clients.openWindow(u)}))});`,
       { headers: { "Content-Type": "application/javascript" } },
     );
   }
@@ -49,6 +53,7 @@ export function handleApp(env, request, url, path) {
 const PAGE = `<!doctype html><html lang="en"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>Fort Wallet</title><link rel="manifest" href="/app/manifest.webmanifest"><meta name="theme-color" content="#14110e">
+<meta name="mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"><meta name="apple-mobile-web-app-title" content="Fort Wallet">
 <style>
 :root{color-scheme:dark}*{box-sizing:border-box;margin:0;padding:0}
 body{font:16px/1.55 -apple-system,system-ui,Segoe UI,Roboto,sans-serif;background:#14110e;color:#efe7da;-webkit-font-smoothing:antialiased;padding:env(safe-area-inset-top) 0 40px}
@@ -99,6 +104,10 @@ label{font-size:13px;color:#cdc2af;display:block;margin-top:10px}
     <div class="card"><div class="row">
       <div><div id="pkstate" class="muted">Checking passkey…</div><div class="muted">Enable your fingerprint to guard your secrets — it never leaves this device. GitHub stays your recovery, so a lost device never locks you out.</div></div>
       <button class="btn" id="enroll">Add passkey</button>
+    </div></div>
+    <div class="card"><div class="row">
+      <div><b>Notifications</b><div class="muted">Get a push when an agent requests a card — approve right from your phone.</div></div>
+      <button class="btn" id="pushbtn">Enable</button>
     </div></div>
 
     <h2>Pending approvals</h2>
@@ -211,8 +220,21 @@ async function load(){
   }catch{}
 }
 
+function urlB64(b){const pad='='.repeat((4-b.length%4)%4);const s=(b+pad).replace(/-/g,'+').replace(/_/g,'/');const r=atob(s);const u=new Uint8Array(r.length);for(let i=0;i<r.length;i++)u[i]=r.charCodeAt(i);return u}
+async function enablePush(){
+  try{
+    if(!('serviceWorker'in navigator)||!('PushManager'in window)){toast('Push not supported here');return}
+    if((await Notification.requestPermission())!=='granted'){toast('Notifications not allowed');return}
+    const reg=await navigator.serviceWorker.ready;
+    const {key}=await jget('/push/key');
+    const sub=await reg.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:urlB64(key)});
+    await jget('/push/subscribe',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({subscription:sub.toJSON()})});
+    $('#pushbtn').textContent='Enabled ✓';toast('Notifications on')
+  }catch(e){toast('Could not enable: '+(e.message||e.name))}
+}
 $('#enroll').onclick=enroll;
 $('#unlock').onclick=unlock;
+$('#pushbtn').onclick=enablePush;
 $('#issue').onclick=()=>{const hosts=$('#c_hosts').value.split(',').map(s=>s.trim()).filter(Boolean);const lim=$('#c_limit').value;act(()=>jget('/cards',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:$('#c_name').value,secret:$('#c_secret').value,allowed_hosts:hosts,limit:lim?+lim:undefined})}))};
 $('#store').onclick=()=>act(()=>jget('/secrets',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:$('#s_name').value,value:$('#s_val').value})}));
 $('#mint').onclick=()=>act(async()=>{const ttl=$('#a_ttl').value;const r=await jget('/agents',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({label:$('#a_label').value||'agent',ttl_days:ttl?+ttl:undefined})});alert('Bearer (shown ONCE — copy it now):\\n\\n'+r.token)});

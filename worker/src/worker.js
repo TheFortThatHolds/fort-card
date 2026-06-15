@@ -49,6 +49,7 @@ import { handleAuth, resolveSession, oauthConfigured, verify, readCookie } from 
 import { handlePasskey } from "./webauthn.js";
 import { resolveAgentBearer, mintAgentBearer, listAgents, revokeAgent } from "./agents.js";
 import { handleApp } from "./app.js";
+import { pushToOwner, addSubscription, removeSubscription, vapidPublicKey } from "./push.js";
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
@@ -183,9 +184,16 @@ async function wrappedDEKFor(env, space, keyRef) {
 }
 
 // best-effort owner notification when an agent requests a card; never blocks issuance.
-async function notifyCardRequest(env, card) {
-  if (!env.NOTIFY_WEBHOOK) return;
+// Two channels: a Web Push to the owner's installed wallet (so it buzzes), and the optional
+// NOTIFY_WEBHOOK relay. Both are wrapped so a failure never blocks the request landing.
+async function notifyCardRequest(env, space, card) {
   const limit = card.limit != null ? String(card.limit) : "unlimited";
+  await pushToOwner(env, space, {
+    title: "Fort Card approval needed",
+    body: `${card.name} → ${card.allowed_hosts.join(", ")} (limit ${limit}). Tap to approve.`,
+    url: "/app",
+  });
+  if (!env.NOTIFY_WEBHOOK) return;
   try {
     await fetch(env.NOTIFY_WEBHOOK, {
       method: "POST",
@@ -198,6 +206,30 @@ async function notifyCardRequest(env, card) {
     });
   } catch {
     /* never block card creation on a notification */
+  }
+}
+
+// ── the WAKE-BACK (DESIGN §8): when the owner approves a pending card, post a comment to the
+// REQUESTER's own repo/PR — never the public fort-card repo — so the agent's subscribed session
+// wakes and resumes immediately. Best-effort; the approval itself never blocks on it. The posting
+// credential (GITHUB_WAKE_TOKEN) should be a scoped connector — its own GitHub App install token
+// or a Fort Card — never a broad PAT. Unset = the push already notified the human; no auto-wake. ──
+async function wakeRequester(env, space, card) {
+  const w = card.wake;
+  if (!w || !w.repo || !w.pr) return;
+  if (!env.GITHUB_WAKE_TOKEN) {
+    await logEvent(env, space, "card.wake_skip", { id: card.id, reason: "no GITHUB_WAKE_TOKEN configured" });
+    return;
+  }
+  try {
+    await fetch(`https://api.github.com/repos/${w.repo}/issues/${w.pr}/comments`, {
+      method: "POST",
+      headers: { Authorization: "Bearer " + env.GITHUB_WAKE_TOKEN, "User-Agent": "fort-card", Accept: "application/vnd.github+json", "Content-Type": "application/json" },
+      body: JSON.stringify({ body: `✅ **Fort Card approved** — \`${card.name}\` (card \`${card.id}\`) is now active. Resume.` }),
+    });
+    await logEvent(env, space, "card.wake", { id: card.id, repo: w.repo, pr: w.pr });
+  } catch {
+    /* best-effort; never block approval on the wake-back */
   }
 }
 
@@ -309,6 +341,23 @@ export default {
       }
     }
 
+    // ── push: the owner's installed wallet subscribes so it buzzes when an agent requests a card ──
+    if (path === "/push/key" && request.method === "GET") {
+      return json({ key: await vapidPublicKey(env) });
+    }
+    if (path === "/push/subscribe" && request.method === "POST") {
+      if (!human) return json({ error: HUMAN_REQUIRED }, 403);
+      try {
+        return json(await addSubscription(env, space, body.subscription || body));
+      } catch (e) {
+        return json({ error: e.message || "invalid subscription" }, 400);
+      }
+    }
+    if (path === "/push/unsubscribe" && request.method === "POST") {
+      await removeSubscription(env, space, body.endpoint);
+      return json({ ok: true });
+    }
+
     // ── store a secret (owner only — seeding a real key into the vault is a human act) ──
     if (path === "/secrets" && request.method === "POST") {
       if (!human) return json({ error: HUMAN_REQUIRED }, 403);
@@ -389,13 +438,16 @@ export default {
         expires_at: body.expires_at || null,
         frozen: pending, // pending cards are inert until approved
         pending,
+        // the wake target: where the requesting agent is working + listening (its own repo/PR).
+        // On approval the wallet posts a comment there so the subscribed agent resumes at once.
+        wake: body.wake && body.wake.repo && body.wake.pr ? { repo: String(body.wake.repo), pr: Number(body.wake.pr) } : null,
         created: new Date().toISOString(),
       };
       await env.VAULT.put(K(space, "card", id), JSON.stringify(card));
       await logEvent(env, space, pending ? "card.request" : "card.issue", {
         id, name: card.name, secret: card.secret, holder: card.holder, allowed_hosts: card.allowed_hosts, limit: card.limit, pending,
       });
-      if (pending) await notifyCardRequest(env, card);
+      if (pending) await notifyCardRequest(env, space, card);
       return json(card);
     }
 
@@ -450,6 +502,7 @@ export default {
         if (!frozen) card.pending = false;
         await env.VAULT.put(K(space, "card", id), JSON.stringify(card));
         await logEvent(env, space, frozen ? "card.freeze" : approved ? "card.approve" : "card.unfreeze", { id });
+        if (approved) await wakeRequester(env, space, card); // write back to the agent's branch so it resumes
         return json({ id, frozen: card.frozen, pending: card.pending || false });
       }
       if (!sub && request.method === "DELETE") {
