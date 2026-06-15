@@ -356,6 +356,13 @@ export default {
       return json({ ok: true });
     }
 
+    // ── list secret NAMES (never values) so the app can show what's stored + pick one for a card ──
+    if (path === "/secrets" && request.method === "GET") {
+      const prefix = K(space, "secret", "");
+      const list = await env.VAULT.list({ prefix });
+      return json({ secrets: list.keys.map((k) => k.name.slice(prefix.length)) });
+    }
+
     // ── store a secret (owner only — seeding a real key into the vault is a human act) ──
     if (path === "/secrets" && request.method === "POST") {
       if (!human) return json({ error: HUMAN_REQUIRED }, 403);

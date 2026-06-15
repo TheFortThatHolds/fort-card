@@ -141,6 +141,7 @@ label{font-size:13px;color:#cdc2af;display:block;margin-top:10px}
     </details>
 
     <h2>Secrets</h2>
+    <div id="secrets"><div class="muted">Loading…</div></div>
     <details class="card"><summary style="cursor:pointer">Store a secret</summary>
       <label>Name<input id="s_name" placeholder="openai-key"></label>
       <label>Value<input id="s_val" placeholder="sk-…" autocomplete="off"></label>
@@ -208,7 +209,7 @@ async function passkeyAssert(){
 async function unlock(){const m=$('#lockmsg');try{m.textContent='Confirm on your device…';await passkeyAssert();showApp()}catch(e){m.innerHTML='<b style="color:#e7857a">'+(e.message||e.name||'cancelled')+'</b>'}}
 
 // run a sensitive action; the unlock session authorizes it. if it's locked, drop back to the tap.
-async function act(fn){try{await fn();load()}catch(e){const msg=e.message||'';if(msg.indexOf('lock')>=0){if(hasPk){toast('Locked — tap to unlock');showLock(me)}else toast('Enable your fingerprint first — tap Add passkey')}else toast(msg||'failed')}}
+async function act(fn,okMsg){try{await fn();if(okMsg)toast(okMsg);load()}catch(e){const msg=e.message||'';if(msg.indexOf('lock')>=0){if(hasPk){toast('Locked — tap to unlock');showLock(me)}else toast('Enable your fingerprint first — tap Add passkey')}else toast(msg||e.name||'failed')}}
 
 const mkbtn=(t,cls)=>{const b=document.createElement('button');b.className='btn sm'+(cls?' '+cls:'');b.textContent=t;return b};
 function cardView(c,pending){
@@ -243,6 +244,10 @@ async function load(){
     const ev=(await jget('/events?limit=12')).events||[];
     $('#events').innerHTML=ev.length?ev.map(e=>'<div class="row" style="border-top:1px solid #2c251c;padding:7px 0"><span>'+e.type+'</span><span class="muted">'+(e.ts||'').slice(5,16).replace('T',' ')+'</span></div>').join(''):'<div class="muted">No activity.</div>';
   }catch{}
+  try{
+    const ss=(await jget('/secrets')).secrets||[];
+    $('#secrets').innerHTML=ss.length?ss.map(n=>'<div class="card"><b>'+n+'</b><div class="muted">stored · use it as a card\\'s "secret"</div></div>').join(''):'<div class="muted">No secrets stored yet.</div>';
+  }catch(e){$('#secrets').innerHTML='<div class="muted">'+e.message+'</div>'}
   refreshPushState();
 }
 
@@ -275,8 +280,8 @@ $('#unlock').onclick=unlock;
 $('#pushbtn').onclick=enablePush;
 $('#installbtn').onclick=async()=>{if(!deferredPrompt)return;deferredPrompt.prompt();await deferredPrompt.userChoice;deferredPrompt=null;$('#installbar').classList.add('hide')};
 $('#notifbtn').onclick=()=>enablePush().then(()=>$('#notifbar').classList.add('hide'));
-$('#issue').onclick=()=>{const hosts=$('#c_hosts').value.split(',').map(s=>s.trim()).filter(Boolean);const lim=$('#c_limit').value;act(()=>jget('/cards',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:$('#c_name').value,secret:$('#c_secret').value,allowed_hosts:hosts,limit:lim?+lim:undefined})}))};
-$('#store').onclick=()=>act(()=>jget('/secrets',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:$('#s_name').value,value:$('#s_val').value})}));
+$('#issue').onclick=()=>{const hosts=$('#c_hosts').value.split(',').map(s=>s.trim()).filter(Boolean);const lim=$('#c_limit').value;act(async()=>{await jget('/cards',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:$('#c_name').value,secret:$('#c_secret').value,allowed_hosts:hosts,limit:lim?+lim:undefined})});$('#c_name').value='';$('#c_secret').value='';$('#c_hosts').value='';$('#c_limit').value=''},'Card issued ✓')};
+$('#store').onclick=()=>{if(!$('#s_name').value||!$('#s_val').value){toast('Name and value required');return}act(async()=>{await jget('/secrets',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:$('#s_name').value,value:$('#s_val').value})});$('#s_name').value='';$('#s_val').value=''},'Secret stored ✓')};
 $('#mint').onclick=()=>act(async()=>{const ttl=$('#a_ttl').value;const r=await jget('/agents',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({label:$('#a_label').value||'agent',ttl_days:ttl?+ttl:undefined})});alert('Bearer (shown ONCE — copy it now):\\n\\n'+r.token)});
 
 (async()=>{

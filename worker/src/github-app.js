@@ -50,6 +50,19 @@ export function appConfigured(env) {
   return !!(env.GH_APP_ID && env.GH_APP_PRIVATE_KEY);
 }
 
+// Resolve the owner of the repo's installation → their space (github:<account id>). This is how a
+// request names its space WITHOUT a wallet credential: the app is installed on the repo by its
+// owner, so the installation tells us (verifiably) whose space it is. Throws if not installed.
+export async function getInstallationOwner(env, repoFull) {
+  const [owner, repo] = String(repoFull).split("/");
+  if (!owner || !repo) throw new Error("repo must be owner/name");
+  const jwt = await mintAppJwt(env);
+  const r = await fetch(`https://api.github.com/repos/${owner}/${repo}/installation`, { headers: { ...GH, Authorization: "Bearer " + jwt } });
+  if (!r.ok) throw new Error("Fort Wallet is not installed on " + repoFull + " (" + r.status + ")");
+  const inst = await r.json();
+  return { id: inst.account && inst.account.id, login: inst.account && inst.account.login };
+}
+
 // Post a comment to owner/repo issue|PR #num via the app installation. Returns true on success.
 export async function postComment(env, repoFull, num, bodyText) {
   if (!appConfigured(env)) return false;
