@@ -108,7 +108,8 @@ export async function handleConnect(request, env, url, path) {
   if (path === "/authorize" && request.method === "GET") {
     const session = await resolveSession(request, env);
     if (!session) {
-      const back = origin + url.pathname + url.search;
+      // hand /login a SAME-ORIGIN PATH to return to (it rejects anything not starting with "/").
+      const back = url.pathname + url.search;
       return Response.redirect(origin + "/login?return=" + encodeURIComponent(back), 302);
     }
     const p = url.searchParams;
