@@ -115,7 +115,11 @@ export async function handleAuth(request, env, url, path) {
   // GET /login → bounce to GitHub with an unguessable, signed, short-lived state.
   if (path === "/login" && request.method === "GET") {
     const state = b64u(crypto.getRandomValues(new Uint8Array(16)).buffer);
-    const stateTok = await sign(env, { state, exp: Date.now() + STATE_TTL_SEC * 1000 });
+    // optional ?return= — a SAME-ORIGIN path to land on after login (the agent-connect consent uses
+    // it to bounce sign-in straight back to the Allow screen). Off-site values are rejected.
+    const ret = url.searchParams.get("return") || "";
+    const safeRet = ret.startsWith("/") && !ret.startsWith("//") ? ret : "";
+    const stateTok = await sign(env, { state, ret: safeRet, exp: Date.now() + STATE_TTL_SEC * 1000 });
     const authorize = new URL("https://github.com/login/oauth/authorize");
     authorize.searchParams.set("client_id", env.GH_CLIENT_ID);
     authorize.searchParams.set("redirect_uri", env.GH_CALLBACK_URL); // EXACT — GitHub allowlists it too
@@ -167,7 +171,7 @@ export async function handleAuth(request, env, url, path) {
     const headers = new Headers();
     headers.append("Set-Cookie", setCookie(SESSION_COOKIE, session, SESSION_TTL_SEC));
     headers.append("Set-Cookie", setCookie(STATE_COOKIE, "", 0));
-    headers.set("Location", "/app");
+    headers.set("Location", stateClaim.ret && stateClaim.ret.startsWith("/") && !stateClaim.ret.startsWith("//") ? stateClaim.ret : "/app");
     return new Response(null, { status: 302, headers });
   }
 

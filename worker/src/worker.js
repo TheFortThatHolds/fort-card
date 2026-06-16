@@ -62,6 +62,7 @@ import { handleApp } from "./app.js";
 import { pushToOwner, addSubscription, removeSubscription, vapidPublicKey, listSubscriptions } from "./push.js";
 import { postComment, appConfigured, getInstallationOwner } from "./github-app.js";
 import { isSubscribed, createCheckout, confirmCheckout, priceCents } from "./stripe.js";
+import { handleConnect } from "./connect.js";
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
@@ -77,7 +78,7 @@ const HUMAN_REQUIRED =
 
 // Every record is namespaced by the tenant's space — the hard isolation boundary. Deny by
 // default: no key is ever read or written without a space in front of it.
-const K = (space, ...parts) => space + ":" + parts.join(":");
+export const K = (space, ...parts) => space + ":" + parts.join(":");
 
 // ── envelope encryption: MASTER_KEY is the KEK (the sovereign root — never rotated in-app);
 // under it, each SPACE has its own rotatable DATA key (DEK) in KV, wrapped by the KEK. A tenant
@@ -158,7 +159,7 @@ async function rotateDataKey(env, space) {
 }
 
 // ── the statement: an append-only ledger of every act (never a key, never a secret value) ──
-async function logEvent(env, space, type, data) {
+export async function logEvent(env, space, type, data) {
   const ts = new Date().toISOString();
   // ts in the key → KV lists lexicographically, so we read newest-first by reversing.
   await env.VAULT.put(K(space, "event", ts, crypto.randomUUID().slice(0, 8)), JSON.stringify({ ts, type, ...data }));
@@ -198,7 +199,7 @@ async function wrappedDEKFor(env, space, keyRef) {
 // best-effort owner notification when an agent requests a card; never blocks issuance.
 // Two channels: a Web Push to the owner's installed wallet (so it buzzes), and the optional
 // NOTIFY_WEBHOOK relay. Both are wrapped so a failure never blocks the request landing.
-async function notifyCardRequest(env, space, card) {
+export async function notifyCardRequest(env, space, card) {
   const limit = card.limit != null ? String(card.limit) : "unlimited";
   await pushToOwner(env, space, {
     title: "Fort Card approval needed",
@@ -299,7 +300,7 @@ async function sha256hex(s) {
 
 // ── charge a card in a space (the settle path, factored so /cards/:id/use and the agent path share
 // it): run the rules, inject the key server-side, return only the response. Mutates used + logs. ──
-async function chargeCard(env, space, card, req) {
+export async function chargeCard(env, space, card, req) {
   const decline = async (reason) => { await logEvent(env, space, "card.decline", { id: card.id, reason }); return { authorized: false, decline_reason: reason }; };
   if (card.pending) return decline("card pending owner approval");
   if (card.frozen) return decline("card frozen");
@@ -355,6 +356,12 @@ export default {
     // don't exist and handleAuth returns null — the self-host bearer path below is unchanged.
     const authResp = await handleAuth(request, env, url, path);
     if (authResp) return authResp;
+
+    // ── AGENT CONNECT DOOR: OAuth sign-in + the MCP endpoint an agent connects through. Returns a
+    // Response if it handled the path, else null (same shape as handleAuth). This is the customer-
+    // facing door — the owner uses it too, as customer #1; there is no separate operator path. ──
+    const connectResp = await handleConnect(request, env, url, path);
+    if (connectResp) return connectResp;
 
     // ── AGENT-FACING discovery + request. No wallet credential: the agent names the repo it's
     // working in, and the Fort Wallet GitHub App being INSTALLED there resolves the owner's space.
