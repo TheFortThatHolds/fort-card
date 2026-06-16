@@ -492,7 +492,7 @@ export default {
       if (!session) return null;
       const u = await verify(env, readCookie(request, "fc_unlock"));
       if (u && u.kind === "unlock" && u.space === space) return null;
-      return json({ error: "locked — unlock with your fingerprint", code: "unlock_required" }, 401);
+      return json({ error: "locked — unlock with your passkey", code: "unlock_required" }, 401);
     };
     const stepIfSession = async () => requireUnlock();
 

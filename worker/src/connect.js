@@ -129,7 +129,7 @@ button{width:100%;padding:14px;margin-top:16px;border:none;border-radius:10px;ba
 <b>see your cards</b>, <b>use cards you've approved</b>, and <b>ask</b> for new cards or recharges
 (which buzz your phone to approve). It can <b>never</b> issue, recharge, or approve on its own.</p>
 <form method="POST" action="/authorize" id="f">${fields}
-<button type="button" id="allow">Approve with Face ID</button>
+<button type="button" id="allow">Approve with your passkey</button>
 <p class="sub" id="msg"></p>
 </form></div>
 <script>
@@ -145,7 +145,7 @@ async function approve(){
     const cred=await navigator.credentials.get({publicKey:o});
     await jget('/passkey/assert/finish',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:cred.id,clientDataJSON:b2b(cred.response.clientDataJSON),authenticatorData:b2b(cred.response.authenticatorData),signature:b2b(cred.response.signature)})});
     document.getElementById('f').submit();
-  }catch(e){m.innerHTML='<b style="color:#e7857a">'+(e.message||e.name||'cancelled')+'</b> — if Face ID is not set up yet, open your wallet, enable it, then try again.';}
+  }catch(e){m.innerHTML='<b style="color:#e7857a">'+(e.message||e.name||'cancelled')+'</b> — if your passkey is not set up yet, open your wallet, enable it, then try again.';}
 }
 document.getElementById('allow').onclick=approve;
 </script>`);
@@ -157,12 +157,12 @@ document.getElementById('allow').onclick=approve;
     const session = await resolveSession(request, env);
     if (!session) return json({ error: "sign in first" }, 401);
     const form = await request.formData();
-    // Fresh Face ID required — the same gate as issuing. The Allow page runs the wallet's EXISTING
-    // passkey ceremony (reused, not rebuilt: /passkey/assert/begin → Face ID → /passkey/assert/finish),
+    // Fresh passkey tap required — the same gate as issuing. The Allow page runs the wallet's EXISTING
+    // passkey ceremony (reused, not rebuilt: /passkey/assert/begin → tap → /passkey/assert/finish),
     // which sets the fc_unlock cookie. We verify that cookie here. Each customer uses their OWN passkey.
     const unlock = await verify(env, readCookie(request, "fc_unlock"));
     if (!unlock || unlock.kind !== "unlock" || unlock.space !== session.space) {
-      return json({ error: "unlock_required — approve with Face ID on the wallet page" }, 401);
+      return json({ error: "unlock_required — approve with your passkey on the wallet page" }, 401);
     }
     const redirect_uri = String(form.get("redirect_uri") || "");
     if (!redirect_uri) return json({ error: "missing redirect_uri" }, 400);
