@@ -17,7 +17,7 @@
 // Reuses from auth.js: sign, verify, resolveSession, oauthConfigured.
 
 import { resolveSession, oauthConfigured, verify, readCookie } from "./auth.js";
-import { K, chargeCard, logEvent, notifyCardRequest } from "./worker.js";
+import { K, chargeCard, logEvent, notifyCardRequest, spaceSubscribed } from "./worker.js";
 
 const CODE_TTL = 600;                 // auth code: 10 min
 const TOKEN_TTL = 60 * 60 * 24 * 30;  // agent pass: 30 days
@@ -112,6 +112,10 @@ export async function handleConnect(request, env, url, path) {
       const back = url.pathname + url.search;
       return Response.redirect(origin + "/login?return=" + encodeURIComponent(back), 302);
     }
+    // Hosted-billing gate: connecting an agent is a paid feature on the managed instance. Self-host
+    // (no billing card) passes through. Don't make them do the passkey only to be rejected — stop here.
+    if (!(await spaceSubscribed(env, session.space)))
+      return htmlResp(`<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Subscribe to connect</title><body style="margin:0;font:16px -apple-system,system-ui,sans-serif;background:#14110e;color:#efe7da;padding:24px"><div style="max-width:440px;margin:24px auto;background:#1a1610;border:1px solid #2c2620;border-radius:14px;padding:22px"><h1 style="font-size:19px">Subscribe to connect an agent</h1><p style="color:#9a8f7d;line-height:1.5">Connecting an agent to your wallet needs an active Fort Card subscription. <a href="/app" style="color:#b87333">Open your wallet</a> to subscribe, then try connecting again.</p></div></body>`, 402);
     const p = url.searchParams;
     const client = await env.VAULT.get("oauthclient:" + (p.get("client_id") || ""), "json");
     const clientName = client ? esc(client.client_name) : "An agent";
@@ -164,6 +168,8 @@ document.getElementById('allow').onclick=approve;
     if (!unlock || unlock.kind !== "unlock" || unlock.space !== session.space) {
       return json({ error: "unlock_required — approve with your passkey on the wallet page" }, 401);
     }
+    if (!(await spaceSubscribed(env, session.space)))
+      return json({ error: "subscribe_required — connecting an agent needs an active Fort Card subscription; subscribe in your wallet and try again" }, 402);
     const redirect_uri = String(form.get("redirect_uri") || "");
     if (!redirect_uri) return json({ error: "missing redirect_uri" }, 400);
     const code = rand();
@@ -219,6 +225,8 @@ document.getElementById('allow').onclick=approve;
         },
       });
     }
+    if (!(await spaceSubscribed(env, principal.space)))
+      return json({ error: "subscribe_required — this space's Fort Card subscription is inactive; renew it in your wallet" }, 402);
     return await handleMcp(request, env, principal);
   }
 
