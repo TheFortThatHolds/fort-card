@@ -115,6 +115,16 @@ jobs:
             echo "GH_APP_PRIVATE_KEY not set yet — skipping (wake-back stays off until it is)."
           fi
 
+      - name: Set STRIPE_KEY (billing; from repo secret; masked, never logged)
+        env:
+          SECRET: ${{ secrets.STRIPE_KEY }}
+        run: |
+          if [ -n "$SECRET" ]; then
+            printf '%s' "$SECRET" | $WR secret put STRIPE_KEY
+          else
+            echo "STRIPE_KEY not set — billing stays off until it is."
+          fi
+
       - name: Mint MASTER_KEY once if absent (random, on the runner; a Worker secret, never KV)
         run: |
           if $WR secret list | grep -q '"MASTER_KEY"'; then
