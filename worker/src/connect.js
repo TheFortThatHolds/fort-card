@@ -10,8 +10,8 @@
 // It can NEVER issue/approve/recharge on its own. "Issuing" is ask-then-the-owner-approves.
 //
 // This door is the SAME one the owner uses as customer #1 — there is no operator backdoor and
-// no Memory-Core coupling. Ported from the Core's proven MCP+OAuth pattern (mcp.ts + oauth.ts),
-// adapted so the consent step is the wallet's GitHub+passkey login instead of a pasted key.
+// no coupling to any external system. A standard MCP server + OAuth 2.1 (PKCE + dynamic client
+// registration), with the consent step being the wallet's own GitHub + passkey sign-in.
 //
 // Reuses from worker.js (exported there): K, chargeCard, logEvent, notifyCardRequest, stepIfSession.
 // Reuses from auth.js: sign, verify, resolveSession, oauthConfigured.
