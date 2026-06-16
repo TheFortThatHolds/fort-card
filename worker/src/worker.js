@@ -247,18 +247,25 @@ async function wakeRequester(env, space, card) {
 // the control plane BEFORE a charge so a misconfigured card can never point the key at an internal
 // address. (The last-mile worker re-checks this too — belt and suspenders.) ──
 export function ssrfBlocked(host) {
-  const h = host.toLowerCase().replace(/^\[|\]$/g, ""); // strip IPv6 brackets
+  let h = host.toLowerCase().replace(/^\[|\]$/g, ""); // strip IPv6 brackets
+  const mapped = h.match(/^::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/); // IPv4-mapped IPv6 → test the embedded v4
+  if (mapped) h = mapped[1];
   if (h === "localhost" || h.endsWith(".localhost") || h.endsWith(".local") || h.endsWith(".internal")) return true;
-  if (h === "::1" || h === "0.0.0.0" || h.startsWith("fc") || h.startsWith("fd") || h.startsWith("fe80")) return true;
+  if (h === "::1" || h === "::" || h === "0.0.0.0" || h.startsWith("fc") || h.startsWith("fd") || h.startsWith("fe80")) return true;
+  if (/^\d+$/.test(h)) return true; // integer-encoded IP (2130706433 = 127.0.0.1)
+  if (/^0x[0-9a-f]+$/.test(h)) return true; // hex-encoded IP (0x7f000001)
   const m = h.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
   if (m) {
-    const [a, b] = [Number(m[1]), Number(m[2])];
+    const o = m.slice(1).map(Number);
+    if (o.some((n) => n > 255)) return true; // malformed octet → refuse rather than guess
+    const [a, b] = o;
     if (a === 127 || a === 10 || a === 0) return true; // loopback / private / this-host
     if (a === 169 && b === 254) return true; // link-local + cloud metadata (169.254.169.254)
     if (a === 192 && b === 168) return true; // private
     if (a === 172 && b >= 16 && b <= 31) return true; // private
     if (a === 100 && b >= 64 && b <= 127) return true; // carrier-grade NAT
   }
+  if (/^[0-9.]+$/.test(h) && /(^|\.)0\d/.test(h)) return true; // octal-smuggled octet (0177.0.0.1)
   return false;
 }
 
