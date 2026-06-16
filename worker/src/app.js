@@ -109,9 +109,9 @@ label{font-size:13px;color:#cdc2af;display:block;margin-top:10px}
   <div id="lock" class="hide" style="padding:48px 0;text-align:center">
     <div class="hero" style="text-align:left"><h1>Fort <span class="c">Wallet</span></h1></div>
     <p class="muted" style="margin-bottom:18px">Signed in as <b id="lockwho">…</b></p>
-    <button class="btn p" id="unlock" style="font-size:16px;padding:14px 22px">Unlock with your fingerprint</button>
+    <button class="btn p" id="unlock" style="font-size:16px;padding:14px 22px">Unlock with your passkey</button>
     <p id="lockmsg" class="muted" style="margin-top:14px"></p>
-    <p class="muted" style="margin:26px auto 0;max-width:460px">Your fingerprint guards this device — it never leaves it. GitHub is your sign-in and your recovery: lose this device, sign back in anywhere and re-enable it, and your vault is right there. You can't be locked out.</p>
+    <p class="muted" style="margin:26px auto 0;max-width:460px">Your passkey guards this device — it never leaves it. GitHub is your sign-in and your recovery: lose this device, sign back in anywhere and re-enable it, and your vault is right there. You can't be locked out.</p>
     <a class="muted" href="/logout" style="display:inline-block;margin-top:16px">Sign out</a>
   </div>
   <div id="gate" class="hide" style="padding:40px 0">
@@ -130,7 +130,7 @@ label{font-size:13px;color:#cdc2af;display:block;margin-top:10px}
 
     <h2>This device</h2>
     <div class="card"><div class="row">
-      <div><div id="pkstate" class="muted">Checking passkey…</div><div class="muted">Enable your fingerprint to guard your secrets — it never leaves this device. GitHub stays your recovery, so a lost device never locks you out.</div></div>
+      <div><div id="pkstate" class="muted">Checking passkey…</div><div class="muted">Enable your passkey to guard your secrets — it never leaves this device. GitHub stays your recovery, so a lost device never locks you out.</div></div>
       <button class="btn" id="enroll">Add passkey</button>
     </div></div>
     <div class="card hide" id="pushcard"><div class="row">
@@ -220,7 +220,7 @@ async function passkeyAssert(){
 async function unlock(){const m=$('#lockmsg');try{m.textContent='Confirm on your device…';await passkeyAssert();showApp()}catch(e){m.innerHTML='<b style="color:#e7857a">'+(e.message||e.name||'cancelled')+'</b>'}}
 
 // run a sensitive action; the unlock session authorizes it. if it's locked, drop back to the tap.
-async function act(fn,okMsg){try{await fn();if(okMsg)toast(okMsg);load()}catch(e){const msg=e.message||'';if(msg.indexOf('lock')>=0){if(hasPk){toast('Locked — tap to unlock');showLock(me)}else toast('Enable your fingerprint first — tap Add passkey')}else toast(msg||e.name||'failed')}}
+async function act(fn,okMsg){try{await fn();if(okMsg)toast(okMsg);load()}catch(e){const msg=e.message||'';if(msg.indexOf('lock')>=0){if(hasPk){toast('Locked — tap to unlock');showLock(me)}else toast('Enable your passkey first — tap Add passkey')}else toast(msg||e.name||'failed')}}
 
 const mkbtn=(t,cls)=>{const b=document.createElement('button');b.className='btn sm'+(cls?' '+cls:'');b.textContent=t;return b};
 function cardView(c,pending){
