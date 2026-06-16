@@ -293,6 +293,15 @@ function stripeCharger(env, card) {
   };
 }
 
+// Hosted-billing gate, shared by the REST agent door and the MCP connect door: on a managed
+// instance (a Stripe billing card is configured) only a SUBSCRIBED space may connect or use.
+// Self-host (no billing card) returns true — they run their own infra; nothing to pay the operator.
+export async function spaceSubscribed(env, space) {
+  const bcard = await billingCard(env);
+  if (!bcard) return true;
+  return await isSubscribed(env, stripeCharger(env, bcard), space);
+}
+
 async function sha256hex(s) {
   const d = new Uint8Array(await crypto.subtle.digest("SHA-256", enc.encode(String(s))));
   return [...d].map((b) => b.toString(16).padStart(2, "0")).join("");
