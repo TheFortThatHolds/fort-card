@@ -484,10 +484,13 @@ export default {
     };
     const stepIfSession = async () => requireUnlock();
 
-    // ── BILLING GATE (DESIGN: monetization). At the door, after sign-in, before any wallet USE.
+    // ── BILLING GATE (DESIGN: monetization). At the door, after sign-in, before ANY wallet access.
     // Only applies to managed (OAuth-session) tenants when billing is configured — a self-host
-    // FORT_KEY/agent caller is never gated (they don't pay the SaaS operator). Reads stay open so
-    // an unsubscribed space can see its empty wallet and subscribe; acting routes call requireSub().
+    // FORT_KEY/agent caller is never gated (they don't pay the SaaS operator), which is why
+    // `subscribed` is only ever false for a browser session. Enforced SERVER-SIDE below: an
+    // unsubscribed session gets nothing but /whoami (handled earlier), the /billing/* routes, and
+    // logout — no reads, no writes. The client's Subscribe wall is just the friendly face of this;
+    // the server no longer trusts the JS to hold the line.
     const charge = env.STRIPE_KEY ? stripeCharge(env) : null;
     const billingOn = !!env.STRIPE_KEY && !!session;
     const subscribed = billingOn ? await isSubscribed(env, charge, space) : true;
@@ -527,6 +530,13 @@ export default {
         return json({ error: (e && e.message) || "could not confirm checkout" }, 502);
       }
     }
+
+    // ── THE DOOR (server-side). Everything past this point is the wallet itself — reads and writes.
+    // An unsubscribed browser session is turned away here, not by the client. /whoami, the app shell,
+    // and /billing/* are all handled above this line, so the subscribe flow still works; nothing
+    // below is reachable without an active subscription. (subscribed is always true for self-host /
+    // agents / owner-token callers, so this only ever gates a paying SaaS tenant's browser session.)
+    { const g = requireSub(); if (g) return g; }
 
     // ── agents: mint / list / revoke scoped bearers (mint + revoke are owner acts, step-up gated) ──
     if (path === "/agents" && request.method === "POST") {
