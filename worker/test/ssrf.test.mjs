@@ -8,6 +8,9 @@ for (const h of [
   "localhost", "foo.localhost", "printer.local", "svc.internal",
   "127.0.0.1", "10.1.2.3", "192.168.1.1", "172.16.0.1", "172.31.255.255",
   "169.254.169.254", "100.64.0.1", "0.0.0.0", "::1", "fd00::1", "fe80::1",
+  // non-decimal / smuggled encodings that previously slipped past the dotted-quad check
+  "2130706433", "0x7f000001", "0177.0.0.1", "::ffff:127.0.0.1", "::ffff:169.254.169.254",
+  "::", "256.1.1.1",
 ]) ok(ssrfBlocked(h) === true, `blocks ${h}`);
 
 for (const h of [
