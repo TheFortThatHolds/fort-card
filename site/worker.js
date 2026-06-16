@@ -128,7 +128,7 @@ node card-demo.mjs YOUR_TOKEN api.github.com https://api.github.com/user token</
 
   <footer>
     Open source (MIT) · <a href="https://github.com/TheFortThatHolds/fort-card" target="_blank" rel="noopener">github.com/TheFortThatHolds/fort-card</a> — read the vault, run your own.<br>
-    Built on the Fort Memory Core — a sovereign, MCP-native memory + credential layer.<br>
+    A sovereign, MCP-native credential wallet — your keys, your infra, your rules.<br>
     © The Fort That Holds · issue cards, don’t hand out keys.
   </footer>
 </div>
