@@ -1,18 +1,16 @@
-// Fort Card — BILLING, THROUGH A CARD. This module NEVER sees the Stripe key. It is handed a
-// `charge(request)` function and does every Stripe call by CHARGING A FORT CARD: the wallet injects
-// the key server-side (scoped to api.stripe.com, capped, freezable, every call on the statement) and
-// hands back only the response. Billing reads responses, nothing else. No raw key, nothing
-// load-bearing — the card is the single door to Stripe, and freezing it stops all billing cold.
+// Fort Card — BILLING. This module is handed a `charge(request)→{status,body}` and runs every Stripe
+// call through it; it never holds or reads the key itself. The operator's Stripe key lives as a
+// Cloudflare WORKER SECRET (STRIPE_KEY) — operator infrastructure, encrypted at rest, never in a
+// tenant vault, never agent-reachable, never in the repo — and worker.js builds `charge` from it
+// (see stripeCharge). Billing only opens Checkout sessions and reads subscription status; it never
+// moves money on its own, and it never touches the credential vault.
 //
-// The operator issues ONE Stripe card in their wallet (allowed host api.stripe.com, pointed at their
-// Stripe secret). The worker finds it and builds `charge` from it (see worker.js). No Stripe key in
-// the repo, no Worker secret, no dashboard button — the wallet is the merchant, via its own card.
-//
-// Config (Worker vars — operator of a managed instance):
-//   var    OPERATOR_SPACE            the operator's space (e.g. github:123) that holds the Stripe card
-//   var    SUBSCRIPTION_PRICE_CENTS  (optional) monthly price in cents — default 800 ($8)
-//   var    SUBSCRIPTION_CURRENCY     (optional) ISO currency — default "usd"
-//   var    SUBSCRIPTION_PRODUCT_NAME (optional) the product's display name — default "Fort Card"
+// Config (operator of a managed instance):
+//   secret STRIPE_KEY                the operator's Stripe key (billing ON iff set; self-host: leave unset)
+//   var    STRIPE_PRICE_ID           (optional) reuse an existing price id instead of auto-creating one
+//   var    SUBSCRIPTION_PRICE_CENTS  (optional) monthly price in cents — default 800 ($8) [auto-create only]
+//   var    SUBSCRIPTION_CURRENCY     (optional) ISO currency — default "usd"             [auto-create only]
+//   var    SUBSCRIPTION_PRODUCT_NAME (optional) product display name — default "Fort Card" [auto-create only]
 
 export function priceCents(env) {
   const n = parseInt(env.SUBSCRIPTION_PRICE_CENTS || "800", 10);
@@ -38,8 +36,8 @@ export function formEncode(obj, prefix) {
 }
 
 const FORM = { "Content-Type": "application/x-www-form-urlencoded" };
-// Charge the Stripe card to run one API call; turn a non-2xx into a thrown error. The card (not this
-// code) holds the key — `charge` is the wallet's settle path bound to the operator's Stripe card.
+// Run one Stripe API call through `charge`; turn a non-2xx into a thrown error. `charge` carries the
+// operator's Stripe key (a Worker secret); this module never holds it.
 async function call(charge, req) {
   const r = await charge(req);
   if (r.status >= 400) throw new Error("stripe " + r.status + ": " + ((r.body && r.body.error && r.body.error.message) || r.status));
@@ -60,6 +58,9 @@ async function writeBilling(env, space, rec) {
 // Find-or-create the operator's single subscription product+price by charging the card. Cached in KV
 // so it's made once, then reused for every customer. The operator never touches the Stripe dashboard.
 export async function ensurePrice(env, charge) {
+  // Reuse a pinned/existing price (no auto-create — the narrow billing key needs no Products/Prices
+  // write, and the operator keeps ONE price, never a duplicate): STRIPE_PRICE_ID var wins, then KV cache.
+  if (env.STRIPE_PRICE_ID) return env.STRIPE_PRICE_ID;
   const cached = await env.VAULT.get("_billing:price");
   if (cached) return cached;
   const product = await post(charge, "/products", {

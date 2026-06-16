@@ -44,12 +44,11 @@
 //   var    `FORT_SPACE`      (optional) the space for the owner/agent token (default "owner")
 //   var    `NOTIFY_WEBHOOK`  (optional) URL that gets a JSON POST when an agent requests a card
 //                            (best-effort; the hosted Core fans this out to email + web-push)
-//   var    `OPERATOR_SPACE`  (optional) turns on SUBSCRIPTIONS. The operator issues ONE Stripe card
-//                            in this space's wallet (allowed host api.stripe.com, pointed at their
-//                            Stripe secret). The worker does ALL Stripe work by CHARGING that card —
-//                            it never reads the key. Creates its own product/price/checkout, confirms
-//                            by querying Stripe (no webhook, no dashboard button, no key in the repo).
-//                            Freeze the card → billing stops. No card issued = billing off.
+//   secret `STRIPE_KEY`     (optional) turns on SUBSCRIPTIONS. The operator's Stripe key as a Worker
+//                            secret — billing reads it directly to open Checkout sessions and confirm
+//                            subscriptions (no webhook, no dashboard button, no key in the repo, never
+//                            in a tenant vault). `STRIPE_PRICE_ID` (var) reuses an existing price
+//                            instead of auto-creating one. Unset = billing off (self-host runs free).
 //
 // Monetization is binary and AT THE DOOR: when STRIPE_KEY is set, an OAuth tenant must hold an
 // active subscription before any wallet USE (store/issue/charge/approve/mint). They can still sign
@@ -270,41 +269,29 @@ export function ssrfBlocked(host) {
   return false;
 }
 
-// ── BILLING RUNS THROUGH A CARD, never a raw key. The operator issues ONE Stripe card in their
-// wallet (allowed host api.stripe.com, pointed at their Stripe secret). We find it and hand stripe.js
-// a `charge` that runs each Stripe call by charging THAT card — the key is injected server-side and
-// only the response comes back. No raw key is ever read by billing, nothing is load-bearing, and
-// freezing the card stops all billing. Returns null (billing off) until the card exists. ──
-async function billingCard(env) {
-  if (!env.OPERATOR_SPACE) return null;
-  const list = await env.VAULT.list({ prefix: K(env.OPERATOR_SPACE, "card", "") });
-  for (const k of list.keys) {
-    const c = JSON.parse(await env.VAULT.get(k.name));
-    if (!c.pending && !c.frozen && (c.allowed_hosts || []).includes("api.stripe.com")) return c;
-  }
-  return null;
-}
-// build the `charge(request)` stripe.js calls: settle through the card; a decline becomes an error.
-function stripeCharger(env, card) {
+// ── BILLING runs on the operator's Stripe key — a Cloudflare WORKER SECRET (STRIPE_KEY): operator
+// infrastructure, encrypted at rest by the platform, never in a tenant vault, never agent-reachable,
+// never in the repo. We hand stripe.js a `charge(req)→{status,body}` that calls Stripe directly with
+// that key. Billing is OFF (everyone passes) until STRIPE_KEY is set — so self-host stays free. ──
+function stripeCharge(env) {
   return async (req) => {
-    const out = await chargeCard(env, env.OPERATOR_SPACE, card, req);
-    if (!out.authorized) throw new Error("Stripe billing card declined: " + out.decline_reason);
-    return { status: out.status, body: out.body };
+    const r = await fetch(req.url, {
+      method: req.method || "GET",
+      headers: { Authorization: "Bearer " + env.STRIPE_KEY, ...(req.headers || {}) },
+      body: req.body,
+    });
+    const text = await r.text();
+    let body; try { body = JSON.parse(text); } catch { body = text; }
+    return { status: r.status, body };
   };
 }
 
 // Hosted-billing gate, shared by the REST agent door and the MCP connect door: on a managed
-// instance (a Stripe billing card is configured) only a SUBSCRIBED space may connect or use.
-// Self-host (no billing card) returns true — they run their own infra; nothing to pay the operator.
+// instance (STRIPE_KEY set) only a SUBSCRIBED space may connect or use. Self-host (no STRIPE_KEY)
+// returns true — they run their own infra; nothing to pay the operator.
 export async function spaceSubscribed(env, space) {
-  const bcard = await billingCard(env);
-  if (!bcard) return true;
-  return await isSubscribed(env, stripeCharger(env, bcard), space);
-}
-
-async function sha256hex(s) {
-  const d = new Uint8Array(await crypto.subtle.digest("SHA-256", enc.encode(String(s))));
-  return [...d].map((b) => b.toString(16).padStart(2, "0")).join("");
+  if (!env.STRIPE_KEY) return true;
+  return await isSubscribed(env, stripeCharge(env), space);
 }
 
 // ── charge a card in a space (the settle path, factored so /cards/:id/use and the agent path share
@@ -390,11 +377,8 @@ export default {
       }
       // Billing is at the door for agents too: an agent may only touch a space whose owner is
       // subscribed. Billing off (no Stripe card issued) passes straight through.
-      {
-        const bcard = await billingCard(env);
-        if (bcard && !(await isSubscribed(env, stripeCharger(env, bcard), aspace))) {
-          return json({ error: "this space's Fort Card subscription is inactive — the owner must subscribe in the wallet", code: "subscribe_required" }, 402);
-        }
+      if (env.STRIPE_KEY && !(await isSubscribed(env, stripeCharge(env), aspace))) {
+        return json({ error: "this space's Fort Card subscription is inactive — the owner must subscribe in the wallet", code: "subscribe_required" }, 402);
       }
       if (path === "/agent/discover") {
         const cardList = await env.VAULT.list({ prefix: K(aspace, "card", "") });
@@ -414,14 +398,13 @@ export default {
         });
       }
       if (path === "/agent/use") {
-        // charge a card the owner already approved in this space — the wake → use step.
+        // Spend a card the owner already approved in this space. An approved card is a BEARER: any
+        // agent in this space may charge it — there is no requester-lock on spend. The real controls
+        // live in chargeCard and travel WITH the card: it must be approved (not pending), not frozen,
+        // not expired, under its cap, and the target host must be on its allowed_hosts. Approval +
+        // the owner's wake-back gate getting a NEW card or a recharge — never the act of spending one.
         const c = await env.VAULT.get(K(aspace, "card", String(b.card)), "json");
         if (!c) return json({ error: "no such card in this space" }, 404);
-        // the charger must hold the one-time charge token handed to the requester. Naming the repo
-        // + card id is NOT enough — only the agent that made the request can spend the card.
-        if (!c.charge_hash || (await sha256hex(b.token || "")) !== c.charge_hash) {
-          return json({ error: "charge token required/invalid — only the requesting agent can charge this card" }, 403);
-        }
         return json(await chargeCard(env, aspace, c, b.request));
       }
       // /agent/request
@@ -442,9 +425,6 @@ export default {
         limit = charges;
       }
       const rid = "card_" + crypto.randomUUID().slice(0, 8);
-      // one-time charge token, returned ONCE to this requester. Only the holder can charge the card
-      // (we store only its hash). Binds the charger to the agent that actually made the request.
-      const chargeToken = "fcu_" + b64e(crypto.getRandomValues(new Uint8Array(24)).buffer).replace(/[+/=]/g, "");
       const reqCard = {
         id: rid,
         name: b.label || "request from " + b.repo,
@@ -458,7 +438,6 @@ export default {
         expires_at: null,
         frozen: true,
         pending: true,
-        charge_hash: await sha256hex(chargeToken),
         wake: b.pr ? { repo: String(b.repo), pr: Number(b.pr) } : null,
         created: new Date().toISOString(),
       };
@@ -466,7 +445,7 @@ export default {
       await logEvent(env, aspace, "card.request", { id: rid, name: reqCard.name, secret: reqCard.secret, allowed_hosts: reqCard.allowed_hosts, limit, repo: b.repo });
       await notifyCardRequest(env, aspace, reqCard);
       const cap = limit == null ? "unlimited charges" : "capped at " + limit + " charge" + (limit > 1 ? "s" : "");
-      return json({ ok: true, pending: true, card: rid, charge_token: chargeToken, note: "Pending the owner's approval (" + cap + ", scoped to " + reqCard.allowed_hosts.join(", ") + "). Keep charge_token — only its holder can charge this card via /agent/use {token}." });
+      return json({ ok: true, pending: true, card: rid, note: "Pending the owner's approval (" + cap + ", scoped to " + reqCard.allowed_hosts.join(", ") + "). Once approved it's a bearer card — charge it via /agent/use {repo, card, request}; the owner's approval (and any recharge) is the only gated step." });
     }
 
     // WHO is calling, and WHICH space do they operate in?
@@ -509,9 +488,8 @@ export default {
     // Only applies to managed (OAuth-session) tenants when billing is configured — a self-host
     // FORT_KEY/agent caller is never gated (they don't pay the SaaS operator). Reads stay open so
     // an unsubscribed space can see its empty wallet and subscribe; acting routes call requireSub().
-    const bcard = await billingCard(env);
-    const charge = bcard ? stripeCharger(env, bcard) : null;
-    const billingOn = !!bcard && !!session;
+    const charge = env.STRIPE_KEY ? stripeCharge(env) : null;
+    const billingOn = !!env.STRIPE_KEY && !!session;
     const subscribed = billingOn ? await isSubscribed(env, charge, space) : true;
     const requireSub = () =>
       subscribed ? null : json({ error: "subscription required — subscribe in the wallet to use it", code: "subscribe_required" }, 402);
@@ -521,11 +499,11 @@ export default {
     // ── billing routes (session tenants). status is always safe to read; subscribe needs the
     // customer to accept the terms; confirm verifies the Checkout return by querying Stripe. ──
     if (path === "/billing/status" && request.method === "GET") {
-      return json({ enabled: !!bcard, subscribed, price_cents: priceCents(env) });
+      return json({ enabled: !!env.STRIPE_KEY, subscribed, price_cents: priceCents(env) });
     }
     if (path === "/billing/subscribe" && request.method === "POST") {
       if (!session) return json({ error: "sign in to subscribe" }, 401);
-      if (!bcard) return json({ error: "billing is not enabled on this instance" }, 400);
+      if (!env.STRIPE_KEY) return json({ error: "billing is not enabled on this instance" }, 400);
       if (subscribed) return json({ ok: true, already_subscribed: true });
       // The terms agreement is collected on Stripe's Checkout page (native ToS consent) — no app-side
       // checkbox. Subscribe just opens Checkout, where Stripe shows the agreement before payment.
@@ -539,7 +517,7 @@ export default {
     }
     if (path === "/billing/confirm" && request.method === "POST") {
       if (!session) return json({ error: "sign in first" }, 401);
-      if (!bcard) return json({ subscribed: true });
+      if (!env.STRIPE_KEY) return json({ subscribed: true });
       if (!body.session_id) return json({ error: "session_id required" }, 400);
       try {
         const r = await confirmCheckout(env, charge, space, body.session_id);
