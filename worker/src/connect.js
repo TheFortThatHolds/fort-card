@@ -227,8 +227,8 @@ document.getElementById('allow').onclick=approve;
 // ── MCP JSON-RPC handler (ported from the Core's mcp.ts) ──
 const TOOLS = [
   {
-    name: "list_cards",
-    description: "See the cards in this wallet — names, hosts, limits, remaining charges. Never a key value.",
+    name: "wallet_map",
+    description: "ALWAYS CALL THIS FIRST when you need a credential. Returns the wallet MAP: usable_cards (approved cards you can spend right now, with their allowed hosts + remaining charges), requestable_secrets (keys stored in the wallet that have NO card yet — you can ask_card for one), and pending_cards (already requested, awaiting the owner). If what you need is a usable card -> use_card. If it's a requestable secret -> ask_card. If it's in NEITHER, the owner has not stored that key yet -> tell them which key to add to their wallet first.",
     inputSchema: { type: "object", properties: {} },
   },
   {
@@ -248,15 +248,17 @@ const TOOLS = [
   },
   {
     name: "ask_card",
-    description: "ASK the owner for a NEW card (or recharge). Lands PENDING and buzzes the owner's phone to approve or deny — you cannot approve it yourself.",
+    description: "ASK the owner for a NEW card (or recharge). Lands PENDING and buzzes the owner's phone to approve or deny — you cannot approve it yourself. REQUIRES a wake target (repo + pr): on approval the wallet posts a comment to that PR to RESUME you. If you're an interactive session with no PR yet, open one first to be your listening post, watch it, THEN ask.",
     inputSchema: {
       type: "object",
-      required: ["name", "secret", "allowed_hosts"],
+      required: ["name", "secret", "allowed_hosts", "repo", "pr"],
       properties: {
         name: { type: "string" },
         secret: { type: "string", description: "which stored secret the card points at" },
         allowed_hosts: { type: "array", items: { type: "string" } },
         limit: { type: "number", description: "charge cap; omit for owner to decide on approval" },
+        repo: { type: "string", description: "owner/name — the repo whose PR the wallet wakes on approval" },
+        pr: { type: "number", description: "the PR number to resume you through. No PR yet (interactive)? Open one first — it's your wake/listening post." },
       },
     },
   },
@@ -264,27 +266,39 @@ const TOOLS = [
 
 async function callTool(name, args, env, principal) {
   const space = principal.space;
-  if (name === "list_cards") {
+  if (name === "wallet_map") {
     const list = await env.VAULT.list({ prefix: K(space, "card", "") });
-    const cards = [];
+    const usable_cards = [], pending_cards = [];
     for (const k of list.keys) {
       const c = JSON.parse(await env.VAULT.get(k.name));
-      cards.push({
+      const view = {
         id: c.id, name: c.name, allowed_hosts: c.allowed_hosts,
-        limit: c.limit, used: c.used, remaining: c.limit != null ? Math.max(0, c.limit - c.used) : null,
-        frozen: c.frozen, pending: c.pending || false,
-      });
+        remaining: c.limit != null ? Math.max(0, c.limit - c.used) : null,
+      };
+      if (!c.pending && !c.frozen) usable_cards.push(view);
+      else pending_cards.push({ ...view, state: c.pending ? "pending owner approval" : "frozen" });
     }
-    return { cards };
+    // secrets stored in the wallet that have no card yet — the agent can ask_card for these
+    const secPrefix = K(space, "secret", "");
+    const secList = await env.VAULT.list({ prefix: secPrefix });
+    const requestable_secrets = secList.keys.map((k) => k.name.slice(secPrefix.length));
+    return {
+      usable_cards,
+      requestable_secrets,
+      pending_cards,
+      note: "Need a credential? (1) If a usable_card covers the host you need -> use_card. (2) Else if the key is in requestable_secrets -> ask_card (lands pending; the owner approves on their phone). (3) Else the owner has not stored that key -> tell them exactly which key to add to their wallet first; do NOT improvise or hold a raw key.",
+    };
   }
   if (name === "use_card") {
     const c = await env.VAULT.get(K(space, "card", String(args.card_id)), "json");
-    if (!c) return { error: "no such card in this wallet" };
+    if (!c) return { error: "no such card — call wallet_map to see usable_cards, or ask_card if the key is a requestable_secret (or have the owner add it if it's neither)" };
     return await chargeCard(env, space, c, { url: args.url, method: args.method, headers: args.headers, body: args.body });
   }
   if (name === "ask_card") {
     if (!args.name || !args.secret || !Array.isArray(args.allowed_hosts) || !args.allowed_hosts.length)
       return { error: "name, secret, and a non-empty allowed_hosts are required" };
+    if (!args.repo || !args.pr)
+      return { error: "ask_card needs a wake target: repo + pr. On approval the wallet posts a wake-back comment to that PR to resume you. No PR yet (interactive session)? Open one first as your listening post, start watching it, then ask again." };
     const id = "card_" + crypto.randomUUID().slice(0, 8);
     const card = {
       id, name: String(args.name), secret: String(args.secret),
@@ -294,12 +308,13 @@ async function callTool(name, args, env, principal) {
       limit: typeof args.limit === "number" ? args.limit : null,
       used: 0, expires_at: null,
       frozen: true, pending: true, // inert until the owner approves on their phone
-      wake: null, created: new Date().toISOString(),
+      wake: { repo: String(args.repo), pr: Number(args.pr) }, // on approval the wallet wakes you here
+      created: new Date().toISOString(),
     };
     await env.VAULT.put(K(space, "card", id), JSON.stringify(card));
-    await logEvent(env, space, "card.request", { id, name: card.name, secret: card.secret, allowed_hosts: card.allowed_hosts, limit: card.limit });
+    await logEvent(env, space, "card.request", { id, name: card.name, secret: card.secret, allowed_hosts: card.allowed_hosts, limit: card.limit, wake: card.wake });
     await notifyCardRequest(env, space, card);
-    return { ok: true, pending: true, card: id, note: "Asked. It's pending — the owner gets a push to approve or deny. You cannot use it until they approve." };
+    return { ok: true, pending: true, card: id, note: "Asked — it's pending. The owner gets a push to approve or deny; you can't use it until they do. On approval the wallet posts a wake-back to " + card.wake.repo + " PR #" + card.wake.pr + " to resume you — make sure you're watching that PR." };
   }
   return { error: "unknown tool: " + name };
 }
@@ -316,7 +331,7 @@ async function handleMcp(request, env, principal) {
       case "initialize":
         res = { jsonrpc: "2.0", id: msg.id, result: {
           protocolVersion: PROTOCOL_VERSION, capabilities: { tools: {} }, serverInfo: SERVER_INFO,
-          instructions: "Fort Card wallet. Tools: list_cards (see), use_card (spend an approved card — the key is injected server-side, you never see it), ask_card (request a new card/recharge — the owner approves on their phone). You can never issue or approve a card yourself.",
+          instructions: "Fort Card wallet — your credentials live here, never in your hands. THE RULE: when you need a credential, your FIRST move is wallet_map. It returns usable_cards (spend now), requestable_secrets (keys the owner has stored but that have no card yet — ask_card for one, the owner approves on their phone), and pending_cards. If what you need is a usable card -> use_card (the real key is injected server-side; you never see it). If it's a requestable secret -> ask_card. If it's in NEITHER, the owner has not stored that key -> tell them exactly which key to add to their wallet; never improvise or hold a raw key. When you ask_card you MUST pass a wake target (repo + pr): on approval the wallet posts a comment to that PR to resume you — if you're an interactive session with no PR, open one first as your listening post and watch it. You can never issue, approve, or recharge a card yourself — that is always the owner's tap.",
         } };
         break;
       case "ping": res = { jsonrpc: "2.0", id: msg.id, result: {} }; break;
