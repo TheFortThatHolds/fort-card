@@ -8,6 +8,12 @@
 **Service:** Fort Card — a sealed credential wallet. **Operator (controller):** [LEGAL ENTITY, ADDRESS].
 **Contact:** [PRIVACY CONTACT EMAIL]. **Last updated:** [DATE].
 
+## Scope
+This service is **intended for users in the United States**. It is **not directed at residents of the
+EU/EEA or the UK**, and is not marketed there. (An operator who chooses to offer the service to EU/UK
+users must additionally complete the EU/UK-specific items below — appoint a representative, confirm
+transfer safeguards, etc. Until then those sections do not apply.)
+
 ## What we collect
 - **Account identity:** your GitHub login/id (via GitHub OAuth) to create and recover your space.
 - **Stored secrets:** API keys you choose to store. These are **encrypted** and the wallet **cannot
@@ -47,7 +53,8 @@ your country; transfers rely on appropriate safeguards (e.g. SCCs / the EU–US 
 [CONFIRM YOUR TRANSFER MECHANISM.]
 
 ## EU/UK representative (GDPR Art 27)
-[NAME + EU/UK ADDRESS OF YOUR APPOINTED REPRESENTATIVE, if you offer the service to EU/UK users.]
+Not applicable while the service is US-only (see **Scope**). If you later offer it to EU/UK users,
+appoint a representative and list [NAME + EU/UK ADDRESS] here.
 
 ## Breaches
 We maintain a breach-response process and will notify the relevant authority and affected users as
