@@ -54,14 +54,14 @@
 // active subscription before any wallet USE (store/issue/charge/approve/mint). They can still sign
 // in, see their empty space, and subscribe. Self-host (FORT_KEY) and agent tokens are never gated.
 
-import { handleAuth, resolveSession, oauthConfigured, verify, readCookie } from "./auth.js";
+import { handleAuth, resolveSession, oauthConfigured, verify, sign, readCookie } from "./auth.js";
 import { handlePasskey, requireStepUp } from "./webauthn.js";
 import { resolveAgentBearer, mintAgentBearer, listAgents, revokeAgent } from "./agents.js";
 import { handleApp } from "./app.js";
 import { pushToOwner, addSubscription, removeSubscription, vapidPublicKey, listSubscriptions } from "./push.js";
 import { postComment, appConfigured, getInstallationOwner } from "./github-app.js";
-import { isSubscribed, createCheckout, confirmCheckout, priceCents, billingSummary, cancelSubscription, resumeSubscription } from "./stripe.js";
-import { sendWelcomeEmail, sendCancelEmail, sendResumeEmail, emailConfigured } from "./email.js";
+import { isSubscribed, createCheckout, confirmCheckout, priceCents, billingSummary, cancelSubscription, resumeSubscription, subActive, listBilledSpaces, getBilling, putBilling, clearBillingIndex } from "./stripe.js";
+import { sendWelcomeEmail, sendCancelEmail, sendResumeEmail, sendLapseEmail, sendPurgeReminderEmail, emailConfigured } from "./email.js";
 import { handleConnect } from "./connect.js";
 
 const enc = new TextEncoder();
@@ -182,6 +182,145 @@ export async function purgeSpace(env, space) {
     cursor = page.list_complete ? undefined : page.cursor;
   } while (cursor);
   return deleted;
+}
+
+// Build the full data export for a space (GDPR Arts 15 & 20): the whole statement, card configs, the
+// NAMES of stored secrets (never values — the wallet can't read them), and the billing summary.
+// Shared by the in-app /export route and the signed email download link.
+async function buildExport(env, space) {
+  const events = [];
+  {
+    let cursor;
+    const ep = K(space, "event", "");
+    do {
+      const page = await env.VAULT.list({ prefix: ep, cursor });
+      for (const k of page.keys) { const raw = await env.VAULT.get(k.name); if (raw) events.push(JSON.parse(raw)); }
+      cursor = page.list_complete ? undefined : page.cursor;
+    } while (cursor);
+    events.sort((a, b) => (a.ts < b.ts ? 1 : a.ts > b.ts ? -1 : 0)); // newest first
+  }
+  const cards = [];
+  {
+    const cp = K(space, "card", "");
+    const list = await env.VAULT.list({ prefix: cp });
+    for (const k of list.keys) {
+      const raw = await env.VAULT.get(k.name);
+      if (!raw) continue;
+      const c = JSON.parse(raw);
+      cards.push({ id: c.id, name: c.name, secret: c.secret, allowed_hosts: c.allowed_hosts, limit: c.limit, used: c.used, holder: c.holder ?? null, expires_at: c.expires_at, frozen: c.frozen, pending: c.pending || false });
+    }
+  }
+  const sp = K(space, "secret", "");
+  const slist = await env.VAULT.list({ prefix: sp });
+  const secret_names = slist.keys.map((k) => k.name.slice(sp.length));
+  const billing = await billingSummary(env, space);
+  return {
+    space,
+    generated_at: new Date().toISOString(),
+    note: "Your Fort Card data export. Secret VALUES are never included — the wallet cannot read them.",
+    billing,
+    secret_names,
+    cards,
+    events,
+  };
+}
+
+// Erase a space: stop future billing (best-effort — never block erasure on Stripe), then wipe every
+// key under its prefix, then drop the billing-index entry. Shared by the in-app /erase, the signed
+// email delete link, and the 30-day lapse purge. Irreversible.
+async function eraseSpace(env, space, charge) {
+  if (charge) { try { await cancelSubscription(env, charge, space); } catch (_) { /* keep going */ } }
+  const deleted = await purgeSpace(env, space);
+  try { await clearBillingIndex(env, space); } catch (_) { /* index is best-effort */ }
+  return deleted;
+}
+
+const escapeHtml = (s) => String(s == null ? "" : s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+// Confirm page reached by the email "Delete my data" link — a GET click here deletes NOTHING; the
+// button POSTs back with the same signed token. (Email scanners prefetch links, so the GET is inert.)
+const deleteConfirmPage = (tokenQ) => `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Delete your Fort Card data</title></head>
+<body style="font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;background:#1a1611;color:#efe7da;max-width:560px;margin:0 auto;padding:48px 22px;line-height:1.55">
+<h2 style="margin:0 0 14px">Delete your Fort Card data</h2>
+<p style="color:#9a8f7d">This permanently deletes everything in your space — your secrets, cards, agent bearers, and statement. It cannot be undone.</p>
+<form method="POST" action="/data/delete?token=${escapeHtml(tokenQ)}">
+<button type="submit" style="background:#3a201c;color:#e7857a;border:1px solid #5a3a36;padding:13px 20px;border-radius:10px;font-size:16px;cursor:pointer">Yes, permanently delete everything</button>
+</form>
+<p style="color:#6b6155;font-size:13px;margin-top:26px">Changed your mind? Just close this page — nothing is deleted unless you tap the button above.</p>
+</body></html>`;
+const deletedPage = () => `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Deleted</title></head>
+<body style="font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;background:#1a1611;color:#efe7da;max-width:560px;margin:0 auto;padding:48px 22px;line-height:1.55">
+<h2 style="margin:0 0 14px">Your data has been deleted</h2>
+<p style="color:#9a8f7d">Everything in your Fort Card space has been permanently erased. Thank you for having trusted Fort Card with your keys.</p>
+</body></html>`;
+
+// ── THE LAPSE LIFECYCLE (run by the scheduled() cron). For every billed space: if the subscription is
+// active, clear any pending-lapse state. If it lapsed, open a 30-day grace window (email the customer a
+// re-up + signed download + signed delete link), warn 7 days before the deadline, and finally — only
+// when PURGE_ENABLED is set — permanently wipe the space. Ships DORMANT: with PURGE_ENABLED unset the
+// sweep does everything EXCEPT the actual delete (it logs purge_due so the operator can watch it run dry).
+const GRACE_MS = 30 * 24 * 60 * 60 * 1000;
+const REMIND_BEFORE_MS = 7 * 24 * 60 * 60 * 1000;
+async function runLifecycle(env) {
+  if (!env.STRIPE_KEY) return { ran: false, reason: "billing off" }; // nothing can lapse
+  const charge = stripeCharge(env);
+  const origin = env.WALLET_ORIGIN || "";
+  const purgeArmed = env.PURGE_ENABLED === "1" || env.PURGE_ENABLED === "true";
+  const now = Date.now();
+  const spaces = await listBilledSpaces(env);
+  let lapsed = 0, reminded = 0, purged = 0, purgeDue = 0, restored = 0;
+  for (const space of spaces) {
+    try {
+      const rec = await getBilling(env, space);
+      if (!rec) { await clearBillingIndex(env, space); continue; } // stale index entry
+      const active = await isSubscribed(env, charge, space); // refreshes rec.status from Stripe
+      if (active) {
+        if (rec.lapsed_at || rec.purge_at) { // re-upped inside the grace window — stand down
+          delete rec.lapsed_at; delete rec.purge_at; delete rec.lapse_reminded;
+          rec.updated = now; await putBilling(env, space, rec);
+          await logEvent(env, space, "billing.resumed_from_lapse", {});
+          restored++;
+        }
+        continue;
+      }
+      // ── lapsed ──
+      const mkLink = async (action) => origin + "/data/" + (action === "export" ? "download" : "delete") +
+        "?token=" + (await sign(env, { kind: "datalink", action, space, exp: (rec.purge_at || now + GRACE_MS) }));
+      if (!rec.lapsed_at) {
+        rec.lapsed_at = now; rec.purge_at = now + GRACE_MS; rec.updated = now;
+        await putBilling(env, space, rec);
+        await logEvent(env, space, "billing.lapsed", { purge_at: rec.purge_at });
+        if (emailConfigured(env) && rec.email) {
+          const mail = await sendLapseEmail(env, { to: rec.email, space, origin, downloadUrl: await mkLink("export"), deleteUrl: await mkLink("erase"), purge_at: rec.purge_at });
+          await logEvent(env, space, "billing.lapse_email", mail);
+        }
+        lapsed++;
+        continue;
+      }
+      if (!rec.lapse_reminded && now >= rec.purge_at - REMIND_BEFORE_MS && now < rec.purge_at) {
+        rec.lapse_reminded = true; rec.updated = now; await putBilling(env, space, rec);
+        if (emailConfigured(env) && rec.email) {
+          const mail = await sendPurgeReminderEmail(env, { to: rec.email, space, origin, downloadUrl: await mkLink("export"), deleteUrl: await mkLink("erase"), purge_at: rec.purge_at });
+          await logEvent(env, space, "billing.purge_reminder_email", mail);
+        }
+        reminded++;
+      }
+      if (now >= rec.purge_at) {
+        if (purgeArmed) {
+          await eraseSpace(env, space, charge);
+          // The space is gone; leave a tombstone OUTSIDE its prefix for audit (not customer data).
+          await env.VAULT.put("_tombstone:" + space, JSON.stringify({ purged_at: now, reason: "lapse_grace_expired" }), { expirationTtl: 400 * 24 * 60 * 60 });
+          purged++;
+        } else {
+          await logEvent(env, space, "billing.purge_due", { since: rec.purge_at, note: "PURGE_ENABLED not set — dry run, nothing deleted" });
+          purgeDue++;
+        }
+      }
+    } catch (e) {
+      // one space failing must never abort the whole sweep
+      try { await logEvent(env, space, "billing.lifecycle_error", { error: (e && e.message) || "unknown" }); } catch (_) {}
+    }
+  }
+  return { ran: true, spaces: spaces.length, lapsed, reminded, purged, purgeDue, restored, purgeArmed };
 }
 
 // ── SPLIT DEPLOY: the last mile (decrypt + inject + fetch) can be delegated to a separate
@@ -362,6 +501,26 @@ export default {
     const path = url.pathname.replace(/\/+$/, "") || "/";
 
     if (path === "/") return json({ name: "fort-card", ok: true, docs: "https://github.com/TheFortThatHolds/fort-card" });
+
+    // ── DATA RIGHTS via a SIGNED LINK (works while LOCKED OUT — e.g. after a lapse, from the email).
+    // The signed token IS the auth (one-way {kind:"datalink", action, space, exp}); no session needed.
+    // Download is read-only (GET). Delete is two-step even from email: GET returns an inert confirm
+    // page, the POST actually erases. These sit before the auth gate ON PURPOSE. ──
+    if (path === "/data/download" && request.method === "GET") {
+      const claim = await verify(env, url.searchParams.get("token") || "");
+      if (!claim || claim.kind !== "datalink" || claim.action !== "export" || !claim.space) return json({ error: "invalid or expired link" }, 401);
+      const data = await buildExport(env, claim.space);
+      return new Response(JSON.stringify(data, null, 2), { headers: { "Content-Type": "application/json", "Content-Disposition": `attachment; filename="fort-card-export-${(data.generated_at || "").slice(0, 10)}.json"` } });
+    }
+    if (path === "/data/delete" && (request.method === "GET" || request.method === "POST")) {
+      const claim = await verify(env, url.searchParams.get("token") || "");
+      if (!claim || claim.kind !== "datalink" || claim.action !== "erase" || !claim.space) return json({ error: "invalid or expired link" }, 401);
+      if (request.method === "GET") {
+        return new Response(deleteConfirmPage(url.searchParams.get("token") || ""), { headers: { "Content-Type": "text/html; charset=utf-8" } });
+      }
+      await eraseSpace(env, claim.space, env.STRIPE_KEY ? stripeCharge(env) : null);
+      return new Response(deletedPage(), { headers: { "Content-Type": "text/html; charset=utf-8" } });
+    }
 
     // The wallet PWA (and its manifest / service worker). Public HTML — the page itself drives
     // auth via /whoami. This same page is what Fort Core embeds as the plugin (?embed=1).
@@ -788,41 +947,7 @@ export default {
       // step-up (fingerprint/Face ID) scoped to this action. Self-host API-token callers (no
       // session) are trusted, mirroring the rest of the wallet.
       if (session) { const g = await requireStepUp(env, request, space, "data.export"); if (g) return g; }
-      const events = [];
-      {
-        let cursor;
-        const ep = K(space, "event", "");
-        do {
-          const page = await env.VAULT.list({ prefix: ep, cursor });
-          for (const k of page.keys) { const raw = await env.VAULT.get(k.name); if (raw) events.push(JSON.parse(raw)); }
-          cursor = page.list_complete ? undefined : page.cursor;
-        } while (cursor);
-        events.sort((a, b) => (a.ts < b.ts ? 1 : a.ts > b.ts ? -1 : 0)); // newest first
-      }
-      const cards = [];
-      {
-        const cp = K(space, "card", "");
-        const list = await env.VAULT.list({ prefix: cp });
-        for (const k of list.keys) {
-          const raw = await env.VAULT.get(k.name);
-          if (!raw) continue;
-          const c = JSON.parse(raw);
-          cards.push({ id: c.id, name: c.name, secret: c.secret, allowed_hosts: c.allowed_hosts, limit: c.limit, used: c.used, holder: c.holder ?? null, expires_at: c.expires_at, frozen: c.frozen, pending: c.pending || false });
-        }
-      }
-      const sp = K(space, "secret", "");
-      const slist = await env.VAULT.list({ prefix: sp });
-      const secret_names = slist.keys.map((k) => k.name.slice(sp.length));
-      const billing = billingOn ? await billingSummary(env, space) : { cancel_at_period_end: false, current_period_end: null };
-      return json({
-        space,
-        generated_at: new Date().toISOString(),
-        note: "Your Fort Card data export. Secret VALUES are never included — the wallet cannot read them.",
-        billing,
-        secret_names,
-        cards,
-        events,
-      });
+      return json(await buildExport(env, space));
     }
 
     // ── ERASE EVERYTHING (GDPR Art 17 — right to erasure, on demand, BEFORE any lapse timer). The UI
@@ -837,8 +962,7 @@ export default {
       // Self-host API-token callers (no session) are trusted, mirroring the rest of the wallet.
       if (session) { const g = await requireStepUp(env, request, space, "data.erase"); if (g) return g; }
       if (body.confirm !== "DELETE") return json({ error: "confirmation required", code: "confirm_required" }, 400);
-      if (billingOn && subscribed && charge) { try { await cancelSubscription(env, charge, space); } catch (_) { /* never block erasure on Stripe */ } }
-      const deleted = await purgeSpace(env, space);
+      const deleted = await eraseSpace(env, space, billingOn && subscribed ? charge : null);
       return json({ erased: true, space, keys_deleted: deleted });
     }
 
@@ -932,5 +1056,11 @@ export default {
     }
 
     return json({ error: "not found" }, 404);
+  },
+
+  // Cloudflare Cron Trigger → the lapse-lifecycle sweep (grace emails, reminders, and — only when
+  // PURGE_ENABLED is set — the 30-day purge). Schedule lives in wrangler.toml ([triggers] crons).
+  async scheduled(event, env, ctx) {
+    ctx.waitUntil(runLifecycle(env));
   },
 };

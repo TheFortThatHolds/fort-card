@@ -53,7 +53,26 @@ async function readBilling(env, space) {
 }
 async function writeBilling(env, space, rec) {
   await env.VAULT.put(bkey(space), JSON.stringify(rec));
+  // Billing index: there's no common prefix across "<space>:billing" keys, so the lapse-lifecycle
+  // sweep can't enumerate billed spaces directly. This flat index (one key per billed space) lets it.
+  await env.VAULT.put("_bidx:" + space, "1");
 }
+
+// ── billing-index helpers, used by the lapse-lifecycle sweep (the scheduled worker). ──
+export async function listBilledSpaces(env) {
+  const prefix = "_bidx:";
+  const spaces = [];
+  let cursor;
+  do {
+    const page = await env.VAULT.list({ prefix, cursor });
+    for (const k of page.keys) spaces.push(k.name.slice(prefix.length));
+    cursor = page.list_complete ? undefined : page.cursor;
+  } while (cursor);
+  return spaces;
+}
+export async function getBilling(env, space) { return readBilling(env, space); }
+export async function putBilling(env, space, rec) { return writeBilling(env, space, rec); }
+export async function clearBillingIndex(env, space) { await env.VAULT.delete("_bidx:" + space); }
 
 // Find-or-create the operator's single subscription product+price by charging the card. Cached in KV
 // so it's made once, then reused for every customer. The operator never touches the Stripe dashboard.
