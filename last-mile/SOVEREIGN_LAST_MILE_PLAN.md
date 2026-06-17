@@ -77,4 +77,19 @@ the split serves a **single** deployment. Multi-tenant hosted needs each space r
 3. Only after both: the pricing page may say "your key is sealed on your own Cloudflare;
    we hold ciphertext" — because the code earns it.
 
-_Status: planning. Nothing below the line is built yet; this file is the spec._
+## Status
+
+- ✅ **Gap 2 built** — per-space last-mile routing (`lastMileConfig`/`splitMode` per space),
+  owner-gated `POST /lastmile/connect` + `/status` + `/disconnect`. Stores `{url, key}` only.
+  Tests: `worker/test/lastmile.test.mjs` (per-space wins, global fallback, space isolation).
+- ✅ **Gap 1 built** — non-custodial key entry. `POST /lastmile/seal-ticket` mints a short-TTL
+  HMAC capability; the browser seals at the tenant's own last-mile (`/seal` accepts the ticket +
+  CORS); the control plane `/secrets` **rejects any plaintext value in split mode** and stores
+  only ciphertext. Ticket primitive: `worker/src/ticket.js` + `worker/test/ticket.test.mjs`.
+- ⏳ **Remaining hardening** (tracked, not blocking the guarantee):
+  - Split the last-mile's `/recovery` (MASTER_KEY reveal) onto a separate owner-only token so a
+    control-plane leak can't expose the root key.
+  - Single-use tickets (currently short-TTL); a connect-time health ping; disconnect/rotate UX.
+
+_The control plane no longer receives a plaintext key in split mode. The guarantee is now
+enforced in code (and in a test), not just intended._

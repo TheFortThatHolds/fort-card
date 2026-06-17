@@ -282,6 +282,21 @@ async function load(){
   }catch(e){$('#secrets').innerHTML='<div class="muted">'+e.message+'</div>'}
   refreshPushState();
 }
+// Store a key. In split (non-custodial) mode the plaintext goes browser → the tenant's OWN
+// last-mile to be sealed there, and the control plane only ever receives ciphertext. Custodial /
+// self-host posts the value to the control plane as before.
+async function storeKey(name,value){
+  let st={connected:false};try{st=await jget('/lastmile/status')}catch(_){}
+  if(st.connected){
+    const t=await jget('/lastmile/seal-ticket',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
+    const r=await fetch(t.url.replace(/\\/+$/,'')+'/seal',{method:'POST',mode:'cors',headers:{'Content-Type':'application/json','X-Seal-Ticket':t.ticket},body:JSON.stringify({plaintext:value,dek:t.dek})});
+    let j={};try{j=await r.json()}catch(_){}
+    if(!r.ok||!j.sealed)throw new Error('seal failed at your last-mile'+(r.status?' ('+r.status+')':''));
+    await jget('/secrets',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,sealed:j.sealed})});
+  }else{
+    await jget('/secrets',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,value})});
+  }
+}
 // roll a key over: fingerprint pops, paste the new value, it overwrites in place. The old value is
 // gone; cards pointing at this name now draw on the new key. No re-issuing cards needed.
 async function rollover(name){
@@ -289,7 +304,7 @@ async function rollover(name){
     await passkeyAssert();
     const v=prompt('Paste the NEW value for "'+name+'"');
     if(!v)return;
-    await jget('/secrets',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,value:v})});
+    await storeKey(name,v);
     toast('Rolled over ✓');load();
   }catch(e){toast(e.message||e.name||'cancelled')}
 }
@@ -390,7 +405,7 @@ $('#unlock').onclick=unlock;
 $('#pushbtn').onclick=enablePush;
 $('#installbtn').onclick=async()=>{if(!deferredPrompt)return;deferredPrompt.prompt();await deferredPrompt.userChoice;deferredPrompt=null;$('#installbar').classList.add('hide')};
 $('#notifbtn').onclick=()=>enablePush().then(()=>$('#notifbar').classList.add('hide'));
-$('#store').onclick=()=>{if(!$('#s_name').value||!$('#s_val').value){toast('Name and value required');return}act(async()=>{await jget('/secrets',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:$('#s_name').value,value:$('#s_val').value})});$('#s_name').value='';$('#s_val').value=''},'Key stored ✓')};
+$('#store').onclick=()=>{if(!$('#s_name').value||!$('#s_val').value){toast('Name and value required');return}act(async()=>{await storeKey($('#s_name').value,$('#s_val').value);$('#s_name').value='';$('#s_val').value=''},'Key stored ✓')};
 
 // ── views: home / vault / log (single page, no reload) ──
 function showView(v){['home','vault','log'].forEach(n=>{const el=$('#view-'+n);if(el)el.classList.toggle('hide',n!==v)});if(v!=='home')scrollTo(0,0)}

@@ -48,8 +48,11 @@ const enc = new TextEncoder();
 const dec = new TextDecoder();
 const b64e = (buf) => btoa(String.fromCharCode(...new Uint8Array(buf)));
 const b64d = (s) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
-const json = (o, status = 200) =>
-  new Response(JSON.stringify(o, null, 2), { status, headers: { "Content-Type": "application/json" } });
+const json = (o, status = 200, extra = {}) =>
+  new Response(JSON.stringify(o, null, 2), { status, headers: { "Content-Type": "application/json", ...extra } });
+// CORS so the tenant's own browser can seal a value here directly. Auth is the seal ticket (a
+// header), not a cookie, so Allow-Origin:* is safe — the ticket is the capability, not the origin.
+const CORS = { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Methods": "POST, OPTIONS", "Access-Control-Allow-Headers": "Content-Type, X-Seal-Ticket", "Access-Control-Max-Age": "86400" };
 // Constant-time string compare for the bearer, so a token can't be recovered byte-by-byte via
 // response-timing. Length is allowed to leak (the token length is fixed), the contents are not.
 const safeEqual = (a, b) => {
@@ -58,6 +61,24 @@ const safeEqual = (a, b) => {
   for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
   return diff === 0;
 };
+
+// ── seal-ticket verify (mirror of worker/src/ticket.js — kept inline so this folder stays
+// self-contained for the one-tap deploy). A short-TTL HMAC over the relay key authorizes exactly
+// ONE browser-direct seal, so the control plane never has to touch the plaintext. ──
+const b64url = (buf) => btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+async function hmacB64(relayKey, msg) {
+  const k = await crypto.subtle.importKey("raw", enc.encode(relayKey), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  return b64url(await crypto.subtle.sign("HMAC", k, enc.encode(msg)));
+}
+async function verifySealTicket(relayKey, ticket, now = Date.now()) {
+  if (typeof ticket !== "string") return false;
+  const parts = ticket.split(".");
+  if (parts.length !== 3) return false;
+  const [nonce, expStr, sig] = parts;
+  const exp = Number(expStr);
+  if (!Number.isFinite(exp) || exp * 1000 < now) return false;
+  return safeEqual(sig, await hmacB64(relayKey, nonce + ":" + exp));
+}
 
 // ── self-minting key resolution: a Worker secret wins (bring-your-own); else read the minted key
 // from KV; else MINT one (32 random bytes), store it, and use it. Idempotent — first boot mints,
@@ -156,9 +177,18 @@ export default {
       });
     }
 
-    // Single shared bearer (minted or bring-your-own). The control plane presents it on every call.
-    if (!safeEqual(request.headers.get("Authorization") || "", "Bearer " + (await lastMileToken(env)))) {
-      return json({ error: "unauthorized" }, 401);
+    // CORS preflight for the browser-direct seal.
+    if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: CORS });
+
+    // Auth: the control plane presents the shared bearer on every call. The tenant's BROWSER may
+    // instead present a short-TTL seal ticket (X-Seal-Ticket) — but ONLY to /seal. /charge,
+    // /rotate, and /recovery always require the bearer.
+    const token = await lastMileToken(env);
+    const bearerOk = safeEqual(request.headers.get("Authorization") || "", "Bearer " + token);
+    const sealByTicket = path === "/seal" && request.method === "POST" &&
+      (await verifySealTicket(token, request.headers.get("X-Seal-Ticket") || ""));
+    if (!bearerOk && !sealByTicket) {
+      return json({ error: "unauthorized" }, 401, CORS);
     }
 
     // ── /recovery — reveal the MASTER_KEY for offline disaster-recovery backup. Gated by the
@@ -176,9 +206,9 @@ export default {
     // ── seal a plaintext value under the owner's active DEK (or the KEK if none) → ciphertext the
     // control plane stores. Plaintext is sealed HERE, on the owner's infra. ──
     if (path === "/seal" && request.method === "POST") {
-      if (typeof body.plaintext !== "string") return json({ error: "plaintext (string) required" }, 400);
+      if (typeof body.plaintext !== "string") return json({ error: "plaintext (string) required" }, 400, CORS);
       const sealed = await sealWith(await openKey(env, body.dek || null), body.plaintext);
-      return json({ sealed });
+      return json({ sealed }, 200, CORS);
     }
 
     // ── the charge: open the sealed secret, inject it into ONE outbound request, return only the

@@ -58,6 +58,7 @@ import { handleAuth, resolveSession, oauthConfigured, verify, readCookie } from 
 import { handlePasskey } from "./webauthn.js";
 import { resolveAgentBearer, mintAgentBearer, listAgents, revokeAgent } from "./agents.js";
 import { handleApp } from "./app.js";
+import { mintSealTicket } from "./ticket.js";
 import { pushToOwner, addSubscription, removeSubscription, vapidPublicKey, listSubscriptions } from "./push.js";
 import { postComment, appConfigured, getInstallationOwner } from "./github-app.js";
 import { isSubscribed, createCheckout, confirmCheckout, priceCents, billingSummary, cancelSubscription, resumeSubscription } from "./stripe.js";
@@ -654,15 +655,21 @@ export default {
       { const g = requireSub(); if (g) return g; }
       const s = await stepIfSession("secret.store");
       if (s) return s;
-      if (!body.name || !body.value) return json({ error: "name and value required" }, 400);
+      if (!body.name) return json({ error: "name required" }, 400);
       let sealed;
       if (await splitMode(env, space)) {
-        // seal on the owner's last-mile worker; the control plane only stores the ciphertext.
+        // NON-CUSTODIAL: the control plane must NEVER receive a plaintext key in split mode. The
+        // browser seals at the tenant's own last-mile (via /lastmile/seal-ticket) and posts back
+        // ONLY ciphertext. Reject any plaintext value outright.
+        if (body.value != null) return json({ error: "this space is split (non-custodial): seal the value at your last-mile and POST { name, sealed }, never a plaintext value" }, 400);
+        if (!body.sealed || typeof body.sealed !== "object" || typeof body.sealed.ct !== "string" || typeof body.sealed.iv !== "string") {
+          return json({ error: "sealed ciphertext { iv, ct } required — seal it at your last-mile first" }, 400);
+        }
         const ref = await env.VAULT.get(K(space, "dek", "active"));
-        const { sealed: s } = await callLastMile(env, space, "/seal", { plaintext: String(body.value), dek: await activeWrappedDEK(env, space) });
-        if (ref) s.keyRef = ref; // tag it with the DEK that opens it (the last-mile sealed under that DEK)
-        sealed = s;
+        sealed = { iv: body.sealed.iv, ct: body.sealed.ct };
+        if (ref) sealed.keyRef = ref; // tag with the DEK that opens it
       } else {
+        if (!body.value) return json({ error: "name and value required" }, 400);
         sealed = await encrypt(env, space, String(body.value));
       }
       await env.VAULT.put(K(space, "secret", body.name), JSON.stringify(sealed));
@@ -722,6 +729,19 @@ export default {
       await env.VAULT.put(K(space, "lastmile", "config"), JSON.stringify({ url, key: String(body.key) }));
       await logEvent(env, space, "lastmile.connect", { url }); // url only — never the key
       return json({ ok: true, connected: true, url });
+    }
+    // Mint a one-shot, short-TTL ticket so the tenant's BROWSER can seal a value at their own
+    // last-mile directly — the control plane never receives the plaintext. Owner-gated. Returns the
+    // last-mile URL + the active wrapped DEK (ciphertext, safe to expose) for the browser to use.
+    if (path === "/lastmile/seal-ticket" && request.method === "POST") {
+      if (!human) return json({ error: HUMAN_REQUIRED }, 403);
+      { const g = requireSub(); if (g) return g; }
+      const s = await stepIfSession("lastmile.seal");
+      if (s) return s;
+      const cfg = await lastMileConfig(env, space);
+      if (!cfg) return json({ error: "no last-mile connected for this space — connect one first" }, 409);
+      const ticket = await mintSealTicket(cfg.key);
+      return json({ url: cfg.url, ticket, dek: await activeWrappedDEK(env, space) });
     }
     if (path === "/lastmile/status" && request.method === "GET") {
       const cfg = await lastMileConfig(env, space);
