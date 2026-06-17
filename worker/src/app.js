@@ -122,7 +122,7 @@ label{font-size:13px;color:#cdc2af;display:block;margin-top:10px}
     <p class="muted" style="margin-bottom:18px">Signed in as <b id="lockwho">…</b></p>
     <button class="btn p" id="unlock" style="font-size:16px;padding:14px 22px">Unlock with your passkey</button>
     <p id="lockmsg" class="muted" style="margin-top:14px"></p>
-    <p class="muted" style="margin:26px auto 0;max-width:460px">Your passkey guards this device — it never leaves it. GitHub is your sign-in and your recovery: lose this device, sign back in anywhere and re-enable it, and your vault is right there. You can't be locked out.</p>
+    <p class="muted" style="margin:26px auto 0;max-width:460px">Your passkey guards this device and stays on it. GitHub is your sign-in and your recovery: lose this device, sign back in anywhere, re-enable it, and your vault is right there — so a lost device doesn't lock you out.</p>
     <a class="muted" href="/logout" style="display:inline-block;margin-top:16px">Sign out</a>
   </div>
   <div id="gate" class="hide" style="padding:40px 0">
@@ -143,7 +143,7 @@ label{font-size:13px;color:#cdc2af;display:block;margin-top:10px}
     <div id="view-home">
       <h2>This device</h2>
       <div class="card"><div class="row">
-        <div><div id="pkstate" class="muted">Checking passkey…</div><div class="muted">Enable your passkey to guard your secrets — it never leaves this device. GitHub stays your recovery, so a lost device never locks you out.</div></div>
+        <div><div id="pkstate" class="muted">Checking passkey…</div><div class="muted">Enable your passkey to guard your secrets — it stays on this device. GitHub stays your recovery, so a lost device doesn't lock you out.</div></div>
         <button class="btn" id="enroll">Add passkey</button>
       </div></div>
       <div class="card hide" id="pushcard"><div class="row">
