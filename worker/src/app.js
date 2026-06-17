@@ -186,7 +186,7 @@ label{font-size:13px;color:#cdc2af;display:block;margin-top:10px}
         <div id="lmstatus" class="muted">Checking your vault…</div>
         <div id="lmconnect" class="hide">
           <div class="muted" style="margin-bottom:6px"><b>1.</b> Deploy your lockbox — one click, installs onto your own Cloudflare (it sets up its own keys):</div>
-          <a class="btn" href="https://deploy.workers.cloudflare.com/?url=https://github.com/TheFortThatHolds/fort-card/tree/main/last-mile" target="_blank" rel="noopener">⚡ Deploy to Cloudflare</a>
+          <a class="btn" href="https://deploy.workers.cloudflare.com/?url=https://github.com/TheFortThatHolds/fort-card-lockbox" target="_blank" rel="noopener">⚡ Deploy to Cloudflare</a>
           <label style="margin-top:14px"><b>2.</b> Paste the worker URL it gives you<input id="lm_url" placeholder="https://fort-card-last-mile.you.workers.dev"></label>
           <button class="btn p" id="lmconnectbtn" style="margin-top:12px"><b>3.</b> Connect my vault (tap to confirm)</button>
           <div class="muted" style="margin-top:8px">We claim the link for you — no tokens to copy. Your key seals inside <em>your</em> worker; we only ever hold ciphertext.</div>
