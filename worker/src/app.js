@@ -94,6 +94,17 @@ label{font-size:13px;color:#cdc2af;display:block;margin-top:10px}
 .toast.show{opacity:1}
 .hide{display:none!important}
 .embed .hero,.embed .bar .sub{display:none}
+.tiles{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px}
+.tile{display:flex;flex-direction:column;align-items:flex-start;gap:2px;text-align:left;background:#1d1812;border:1px solid #2c251c;border-radius:14px;padding:16px;cursor:pointer;color:#efe7da;font:inherit}
+.tile:hover{border-color:#b87333}
+.tile b{font-size:16px}
+.tile .ic{font-size:22px;margin-bottom:6px}
+@media(max-width:480px){.tiles{grid-template-columns:1fr}}
+.back{margin:4px 0 18px}
+.ev{border-top:1px solid #2c251c;padding:9px 0}
+.ev:first-child{border-top:0}
+.ev .evtype{font-weight:600}
+.ev .evd{margin-top:2px;word-break:break-word}
 </style></head><body>
 <div class="wrap" id="root">
   <div id="installbar" class="hide" style="background:#1d1812;border:1px solid #b87333;border-radius:12px;padding:12px 14px;margin:14px 0;display:flex;align-items:center;justify-content:space-between;gap:12px">
@@ -128,60 +139,64 @@ label{font-size:13px;color:#cdc2af;display:block;margin-top:10px}
   <div id="app" class="hide">
     <div class="bar"><div class="id">space <b id="who">…</b></div><a class="btn sm" href="/logout">Sign out</a></div>
 
-    <h2>This device</h2>
-    <div class="card"><div class="row">
-      <div><div id="pkstate" class="muted">Checking passkey…</div><div class="muted">Enable your passkey to guard your secrets — it never leaves this device. GitHub stays your recovery, so a lost device never locks you out.</div></div>
-      <button class="btn" id="enroll">Add passkey</button>
-    </div></div>
-    <div class="card hide" id="pushcard"><div class="row">
-      <div><b>Notifications</b><div class="muted">Get a push when an agent requests a card — approve right from your phone.</div><div id="pushstatus" class="muted" style="margin-top:6px"></div></div>
-      <button class="btn" id="pushbtn">Enable</button>
-    </div></div>
+    <!-- HOME: approve agent requests, see cards, jump to Vault / Log -->
+    <div id="view-home">
+      <h2>This device</h2>
+      <div class="card"><div class="row">
+        <div><div id="pkstate" class="muted">Checking passkey…</div><div class="muted">Enable your passkey to guard your secrets — it never leaves this device. GitHub stays your recovery, so a lost device never locks you out.</div></div>
+        <button class="btn" id="enroll">Add passkey</button>
+      </div></div>
+      <div class="card hide" id="pushcard"><div class="row">
+        <div><b>Notifications</b><div class="muted">Get a push when an agent requests a card — approve right from your phone.</div><div id="pushstatus" class="muted" style="margin-top:6px"></div></div>
+        <button class="btn" id="pushbtn">Enable</button>
+      </div></div>
 
-    <h2>Pending approvals</h2>
-    <div id="pending"><div class="muted">None.</div></div>
+      <h2>Pending approvals</h2>
+      <div id="pending"><div class="muted">None.</div></div>
 
-    <h2>Cards</h2>
-    <div id="cards"><div class="muted">Loading…</div></div>
-    <details class="card"><summary style="cursor:pointer">Issue a card</summary>
-      <label>Name<input id="c_name" placeholder="openai for the drafter"></label>
-      <label>Vault secret it draws on<input id="c_secret" placeholder="openai-key"></label>
-      <label>Allowed hosts (comma-separated)<input id="c_hosts" placeholder="api.openai.com"></label>
-      <label>Use limit (blank = unlimited)<input id="c_limit" type="number" inputmode="numeric"></label>
-      <button class="btn p" id="issue" style="margin-top:14px">Issue (tap to confirm)</button>
-    </details>
+      <h2>Cards</h2>
+      <div id="cards"><div class="muted">Loading…</div></div>
 
-    <h2>Secrets</h2>
-    <div id="secrets"><div class="muted">Loading…</div></div>
-    <details class="card"><summary style="cursor:pointer">Store a secret</summary>
-      <label>Name<input id="s_name" placeholder="openai-key"></label>
-      <label>Value<input id="s_val" placeholder="sk-…" autocomplete="off"></label>
-      <button class="btn p" id="store" style="margin-top:14px">Store (tap to confirm)</button>
-    </details>
-
-    <h2>Agent bearers</h2>
-    <div id="agents"><div class="muted">Loading…</div></div>
-    <details class="card"><summary style="cursor:pointer">Mint an agent bearer</summary>
-      <label>Label<input id="a_label" placeholder="ci-bot"></label>
-      <label>Expires in days (blank = never)<input id="a_ttl" type="number" inputmode="numeric"></label>
-      <button class="btn p" id="mint" style="margin-top:14px">Mint (tap to confirm)</button>
-    </details>
-
-    <h2>Statement</h2>
-    <div id="events" class="card"><div class="muted">Loading…</div></div>
-
-    <footer id="subfoot" class="hide" style="margin:36px 0 14px;padding-top:18px;border-top:1px solid #2c251c;text-align:center">
-      <div id="subline" class="muted" style="margin-bottom:10px"></div>
-      <button class="btn sm" id="cancelsub" style="display:none">Cancel subscription</button>
-      <button class="btn p sm" id="resumesub" style="display:none">Resume subscription</button>
-      <!-- Two-step confirm: a stray scroll-tap on "Cancel" only OPENS this; the prominent choice is
-           "Keep", and cancelling needs a second, deliberate tap on the quieter "Yes, cancel". -->
-      <div id="cancelconfirm" class="hide">
-        <div id="cancelconfirmmsg" class="muted" style="margin-bottom:12px"></div>
-        <button class="btn p sm" id="cancelkeep">Keep my subscription</button>
-        <button class="btn sm" id="canceldo" style="margin-left:10px;color:#e7857a;border-color:#5a3a36">Yes, cancel</button>
+      <h2>Manage</h2>
+      <div class="tiles">
+        <button class="tile" id="tile-vault"><span class="ic">🔑</span><b>Vault</b><span class="muted">Add &amp; roll your keys</span></button>
+        <button class="tile" id="tile-log"><span class="ic">📜</span><b>Log</b><span class="muted">What your agents did</span></button>
       </div>
-    </footer>
+
+      <footer id="subfoot" class="hide" style="margin:36px 0 14px;padding-top:18px;border-top:1px solid #2c251c;text-align:center">
+        <div id="subline" class="muted" style="margin-bottom:10px"></div>
+        <button class="btn sm" id="cancelsub" style="display:none">Cancel subscription</button>
+        <button class="btn p sm" id="resumesub" style="display:none">Resume subscription</button>
+        <!-- Two-step confirm: a stray scroll-tap on "Cancel" only OPENS this; the prominent choice is
+             "Keep", and cancelling needs a second, deliberate tap on the quieter "Yes, cancel". -->
+        <div id="cancelconfirm" class="hide">
+          <div id="cancelconfirmmsg" class="muted" style="margin-bottom:12px"></div>
+          <button class="btn p sm" id="cancelkeep">Keep my subscription</button>
+          <button class="btn sm" id="canceldo" style="margin-left:10px;color:#e7857a;border-color:#5a3a36">Yes, cancel</button>
+        </div>
+      </footer>
+    </div>
+
+    <!-- VAULT: your keys — add and roll over in place -->
+    <div id="view-vault" class="hide">
+      <button class="btn sm back" data-back>← Back</button>
+      <h2>Vault — your keys</h2>
+      <p class="muted" style="margin-bottom:14px">The keys your cards draw on. Add a key, or roll one over in place — every card pointing at it picks up the new value automatically, no re-issuing.</p>
+      <div id="secrets"><div class="muted">Loading…</div></div>
+      <details class="card"><summary style="cursor:pointer">Add a key</summary>
+        <label>Name<input id="s_name" placeholder="openai-key"></label>
+        <label>Value<input id="s_val" placeholder="sk-…" autocomplete="off"></label>
+        <button class="btn p" id="store" style="margin-top:14px">Store (tap to confirm)</button>
+      </details>
+    </div>
+
+    <!-- LOG: the full statement, newest first, with detail -->
+    <div id="view-log" class="hide">
+      <button class="btn sm back" data-back>← Back</button>
+      <h2>Log — agent activity</h2>
+      <p class="muted" style="margin-bottom:14px">Every act in your space, newest first: requests, approvals, charges, declines, freezes, key rolls.</p>
+      <div id="events" class="card"><div class="muted">Loading…</div></div>
+    </div>
   </div>
 </div>
 <div class="toast" id="toast"></div>
@@ -259,15 +274,6 @@ async function load(){
     $('#pkstate').innerHTML=hasPk?('<b style="color:#7fae6d">✓ '+pk.length+' passkey'+(pk.length>1?'s':'')+' on file</b>'):'<b style="color:#e7a85a">No passkey on this device — add one</b>';
     $('#enroll').textContent=hasPk?'Add another':'Add passkey';
   }catch(e){$('#pkstate').innerHTML='<b style="color:#e7857a">Couldn\\'t read passkeys: '+(e.message||'error')+'</b>'}
-  try{
-    const ag=(await jget('/agents')).agents||[];const ae=$('#agents');ae.innerHTML='';
-    if(!ag.length)ae.innerHTML='<div class="muted">None.</div>';
-    ag.filter(a=>!a.revoked).forEach(a=>{const el=document.createElement('div');el.className='card';el.innerHTML='<div class="row"><div><b>'+a.label+'</b><div class="muted">'+a.id+(a.expires_at?' · expires '+a.expires_at.slice(0,10):'')+'</div></div></div><div class="btns" style="margin-top:10px"></div>';const rv=mkbtn('Revoke');rv.onclick=()=>{if(confirm('Revoke '+a.label+'?'))act(()=>jget('/agents/'+a.id,{method:'DELETE'}))};el.querySelector('.btns').append(rv);ae.append(el)});
-  }catch(e){$('#agents').innerHTML='<div class="muted">'+e.message+'</div>'}
-  try{
-    const ev=(await jget('/events?limit=12')).events||[];
-    $('#events').innerHTML=ev.length?ev.map(e=>'<div class="row" style="border-top:1px solid #2c251c;padding:7px 0"><span>'+e.type+'</span><span class="muted">'+(e.ts||'').slice(5,16).replace('T',' ')+'</span></div>').join(''):'<div class="muted">No activity.</div>';
-  }catch{}
   try{
     const ss=(await jget('/secrets')).secrets||[];
     const se=$('#secrets');se.innerHTML='';
@@ -384,9 +390,20 @@ $('#unlock').onclick=unlock;
 $('#pushbtn').onclick=enablePush;
 $('#installbtn').onclick=async()=>{if(!deferredPrompt)return;deferredPrompt.prompt();await deferredPrompt.userChoice;deferredPrompt=null;$('#installbar').classList.add('hide')};
 $('#notifbtn').onclick=()=>enablePush().then(()=>$('#notifbar').classList.add('hide'));
-$('#issue').onclick=()=>{const hosts=$('#c_hosts').value.split(',').map(s=>s.trim()).filter(Boolean);const lim=$('#c_limit').value;act(async()=>{await jget('/cards',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:$('#c_name').value,secret:$('#c_secret').value,allowed_hosts:hosts,limit:lim?+lim:undefined})});$('#c_name').value='';$('#c_secret').value='';$('#c_hosts').value='';$('#c_limit').value=''},'Card issued ✓')};
-$('#store').onclick=()=>{if(!$('#s_name').value||!$('#s_val').value){toast('Name and value required');return}act(async()=>{await jget('/secrets',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:$('#s_name').value,value:$('#s_val').value})});$('#s_name').value='';$('#s_val').value=''},'Secret stored ✓')};
-$('#mint').onclick=()=>act(async()=>{const ttl=$('#a_ttl').value;const r=await jget('/agents',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({label:$('#a_label').value||'agent',ttl_days:ttl?+ttl:undefined})});alert('Bearer (shown ONCE — copy it now):\\n\\n'+r.token)});
+$('#store').onclick=()=>{if(!$('#s_name').value||!$('#s_val').value){toast('Name and value required');return}act(async()=>{await jget('/secrets',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:$('#s_name').value,value:$('#s_val').value})});$('#s_name').value='';$('#s_val').value=''},'Key stored ✓')};
+
+// ── views: home / vault / log (single page, no reload) ──
+function showView(v){['home','vault','log'].forEach(n=>{const el=$('#view-'+n);if(el)el.classList.toggle('hide',n!==v)});if(v!=='home')scrollTo(0,0)}
+$('#tile-vault')&&($('#tile-vault').onclick=()=>showView('vault'));
+$('#tile-log')&&($('#tile-log').onclick=()=>{showView('log');loadEvents()});
+document.querySelectorAll('[data-back]').forEach(b=>b.onclick=()=>showView('home'));
+
+// ── the log: a human-readable type plus the detail the ledger already records ──
+const EVNAMES={'card.request':'Card requested','card.approve':'Card approved','card.unfreeze':'Card unfrozen','card.freeze':'Card frozen','card.revoke':'Card revoked','card.issue':'Card issued','card.charge':'Charge','card.decline':'Declined','card.wake':'Agent woken','card.wake_skip':'Wake skipped','secret.store':'Key stored','vault.rotate':'Key rolled over'};
+function evName(t){return EVNAMES[t]||String(t||'').replace(/[._]/g,' ').replace(/^./,c=>c.toUpperCase())}
+function evDetail(e){const d=[];if(e.name)d.push(e.name);if(e.host)d.push(e.host);if(e.status!=null)d.push('→ '+e.status);if(e.allowed_hosts&&e.allowed_hosts.length)d.push(e.allowed_hosts.join(', '));if(e.limit!=null)d.push('cap '+e.limit);if(e.repo)d.push(e.repo);if(e.reason)d.push(e.reason);if(e.id)d.push(e.id);return d.join(' · ')}
+function evTime(ts){return String(ts||'').replace('T',' ').slice(0,16)}
+async function loadEvents(){try{const ev=(await jget('/events?limit=200')).events||[];$('#events').innerHTML=ev.length?ev.map(e=>'<div class="ev"><div class="row"><span class="evtype">'+evName(e.type)+'</span><span class="muted">'+evTime(e.ts)+'</span></div>'+(evDetail(e)?'<div class="muted evd">'+evDetail(e)+'</div>':'')+'</div>').join(''):'<div class="muted">No activity yet.</div>'}catch(e){$('#events').innerHTML='<div class="muted">'+e.message+'</div>'}}
 
 (async()=>{
   let w;try{w=await jget('/whoami')}catch{$('#signin').classList.remove('hide');return regSW()}
