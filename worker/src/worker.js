@@ -55,7 +55,7 @@
 // in, see their empty space, and subscribe. Self-host (FORT_KEY) and agent tokens are never gated.
 
 import { handleAuth, resolveSession, oauthConfigured, verify, readCookie } from "./auth.js";
-import { handlePasskey } from "./webauthn.js";
+import { handlePasskey, requireStepUp } from "./webauthn.js";
 import { resolveAgentBearer, mintAgentBearer, listAgents, revokeAgent } from "./agents.js";
 import { handleApp } from "./app.js";
 import { pushToOwner, addSubscription, removeSubscription, vapidPublicKey, listSubscriptions } from "./push.js";
@@ -784,7 +784,10 @@ export default {
     // subscription-gated — the right to your own data doesn't depend on an active plan. ──
     if (path === "/export" && request.method === "GET") {
       if (!human) return json({ error: HUMAN_REQUIRED }, 403);
-      { const s = await stepIfSession("data.export"); if (s) return s; }
+      // Same gate as using the app, and then some: a browser human must present a FRESH passkey
+      // step-up (fingerprint/Face ID) scoped to this action. Self-host API-token callers (no
+      // session) are trusted, mirroring the rest of the wallet.
+      if (session) { const g = await requireStepUp(env, request, space, "data.export"); if (g) return g; }
       const events = [];
       {
         let cursor;
@@ -829,7 +832,10 @@ export default {
     // your own data. ──
     if (path === "/erase" && request.method === "POST") {
       if (!human) return json({ error: HUMAN_REQUIRED }, 403);
-      { const s = await stepIfSession("data.erase"); if (s) return s; }
+      // Destructive + irreversible: a browser human must present a FRESH passkey step-up
+      // (fingerprint/Face ID) for this exact action — the session unlock alone is not enough.
+      // Self-host API-token callers (no session) are trusted, mirroring the rest of the wallet.
+      if (session) { const g = await requireStepUp(env, request, space, "data.erase"); if (g) return g; }
       if (body.confirm !== "DELETE") return json({ error: "confirmation required", code: "confirm_required" }, 400);
       if (billingOn && subscribed && charge) { try { await cancelSubscription(env, charge, space); } catch (_) { /* never block erasure on Stripe */ } }
       const deleted = await purgeSpace(env, space);

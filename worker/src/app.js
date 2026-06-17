@@ -245,6 +245,16 @@ async function passkeyAssert(){
 }
 async function unlock(){const m=$('#lockmsg');try{m.textContent='Confirm on your device…';await passkeyAssert();showApp()}catch(e){m.innerHTML='<b style="color:#e7857a">'+(e.message||e.name||'cancelled')+'</b>'}}
 
+// Per-action step-up: a FRESH fingerprint/Face ID tap that yields a one-shot token for exactly this
+// action (the banking-app gate). Sent as the X-Fort-Action header; the server burns it after one use.
+async function stepUp(action){
+  const {publicKey:o}=await jget('/passkey/assert/begin',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action})});
+  o.challenge=s2b(o.challenge);o.allowCredentials=(o.allowCredentials||[]).map(c=>({...c,id:s2b(c.id)}));
+  const c=await navigator.credentials.get({publicKey:o});
+  const r=await jget('/passkey/assert/finish',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:c.id,clientDataJSON:b2b(c.response.clientDataJSON),authenticatorData:b2b(c.response.authenticatorData),signature:b2b(c.response.signature)})});
+  return r.action_token;
+}
+
 // run a sensitive action; the unlock session authorizes it. if it's locked, drop back to the tap.
 async function act(fn,okMsg){try{await fn();if(okMsg)toast(okMsg);load()}catch(e){const msg=e.message||'';if(msg.indexOf('lock')>=0){if(hasPk){toast('Locked — tap to unlock');showLock(me)}else toast('Enable your passkey first — tap Add passkey')}else toast(msg||e.name||'failed')}}
 
@@ -403,13 +413,15 @@ $('#mint').onclick=()=>act(async()=>{const ttl=$('#a_ttl').value;const r=await j
 // Data & privacy (GDPR): export your data, or erase everything on demand.
 const lockaware=(m)=>{if((m||'').indexOf('lock')>=0&&hasPk){toast('Locked — tap to unlock');showLock(me);return true}return false};
 $('#exportdata')&&($('#exportdata').onclick=async()=>{
-  try{const d=await jget('/export');const blob=new Blob([JSON.stringify(d,null,2)],{type:'application/json'});
+  try{const tok=await stepUp('data.export');
+    const d=await jget('/export',{headers:{'X-Fort-Action':tok}});const blob=new Blob([JSON.stringify(d,null,2)],{type:'application/json'});
     const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='fort-card-export-'+(d.generated_at||'').slice(0,10)+'.json';document.body.append(a);a.click();a.remove();URL.revokeObjectURL(a.href);toast('Downloaded ✓')}
   catch(e){const m=e.message||'';if(!lockaware(m))toast(m||'export failed')}});
 $('#erasedata')&&($('#erasedata').onclick=()=>{$('#eraseconfirm').classList.remove('hide')});
 $('#erasekeep')&&($('#erasekeep').onclick=()=>{$('#eraseconfirm').classList.add('hide')});
 $('#erasedo')&&($('#erasedo').onclick=async()=>{$('#erasedo').disabled=true;
-  try{await jget('/erase',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({confirm:'DELETE'})});
+  try{const tok=await stepUp('data.erase');
+    await jget('/erase',{method:'POST',headers:{'Content-Type':'application/json','X-Fort-Action':tok},body:JSON.stringify({confirm:'DELETE'})});
     toast('Everything deleted.');setTimeout(()=>location.reload(),1200)}
   catch(e){const m=e.message||'';$('#erasedo').disabled=false;if(!lockaware(m))toast(m||'erase failed')}});
 
