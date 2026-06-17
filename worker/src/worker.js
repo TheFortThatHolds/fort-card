@@ -170,13 +170,26 @@ export async function logEvent(env, space, type, data) {
 // (the control plane) holds only ciphertext and never touches MASTER_KEY — it relays sealed
 // material to the last-mile worker, which opens it on the owner's infra. Unset = single-worker
 // self-host (decrypt inline, the original behaviour). See src/last-mile.js. ──
-function splitMode(env) {
-  return !!(env.LAST_MILE_URL && env.LAST_MILE_KEY);
+// Per-space last-mile: a tenant points the control plane at THEIR OWN last-mile worker (on their
+// Cloudflare). We store only the URL + the relay token needed to reach it — never a customer's API
+// key. A global LAST_MILE_URL/KEY still works for single-tenant / self-host (the fallback).
+export async function lastMileConfig(env, space) {
+  if (space) {
+    const raw = await env.VAULT.get(K(space, "lastmile", "config"));
+    if (raw) { try { const c = JSON.parse(raw); if (c && c.url && c.key) return c; } catch {} }
+  }
+  if (env.LAST_MILE_URL && env.LAST_MILE_KEY) return { url: env.LAST_MILE_URL, key: env.LAST_MILE_KEY };
+  return null;
 }
-async function callLastMile(env, path, payload) {
-  const resp = await fetch(env.LAST_MILE_URL.replace(/\/+$/, "") + path, {
+export async function splitMode(env, space) {
+  return !!(await lastMileConfig(env, space));
+}
+async function callLastMile(env, space, path, payload) {
+  const cfg = await lastMileConfig(env, space);
+  if (!cfg) throw new Error("no last-mile configured for this space");
+  const resp = await fetch(cfg.url.replace(/\/+$/, "") + path, {
     method: "POST",
-    headers: { "Content-Type": "application/json", Authorization: "Bearer " + env.LAST_MILE_KEY },
+    headers: { "Content-Type": "application/json", Authorization: "Bearer " + cfg.key },
     body: JSON.stringify(payload),
   });
   if (!resp.ok) throw new Error("last-mile " + path + " failed: " + resp.status);
@@ -312,8 +325,8 @@ export async function chargeCard(env, space, card, req) {
   if (!secRaw) return decline("secret missing from vault");
   const sealed = JSON.parse(secRaw);
   let resp, out;
-  if (splitMode(env)) {
-    const r = await callLastMile(env, "/charge", { secret: sealed, dek: await wrappedDEKFor(env, space, sealed.keyRef), header: card.header, header_prefix: card.header_prefix, request: { url: req.url, method: req.method || "GET", headers: req.headers || {}, body: req.body } });
+  if (await splitMode(env, space)) {
+    const r = await callLastMile(env, space, "/charge", { secret: sealed, dek: await wrappedDEKFor(env, space, sealed.keyRef), header: card.header, header_prefix: card.header_prefix, request: { url: req.url, method: req.method || "GET", headers: req.headers || {}, body: req.body } });
     resp = { status: r.status }; out = r.body;
   } else {
     const key = await decrypt(env, space, sealed);
@@ -334,7 +347,7 @@ export default {
     // Crypto must be available (MASTER_KEY, or a delegated last mile in split mode), and at least
     // one way to authenticate: the self-host owner token (FORT_KEY) and/or GitHub-App OAuth login
     // (the SaaS path). A pure self-host sets FORT_KEY; a managed instance configures OAuth.
-    const cryptoReady = env.MASTER_KEY || splitMode(env);
+    const cryptoReady = env.MASTER_KEY || (env.LAST_MILE_URL && env.LAST_MILE_KEY) || oauthConfigured(env);
     const authReady = env.FORT_KEY || oauthConfigured(env);
     if (!cryptoReady || !authReady) {
       return json({ error: "server not configured — need MASTER_KEY (or LAST_MILE_URL + LAST_MILE_KEY), and FORT_KEY or the GitHub-App OAuth vars (GH_CLIENT_ID/SECRET/CALLBACK_URL)" }, 500);
@@ -643,10 +656,10 @@ export default {
       if (s) return s;
       if (!body.name || !body.value) return json({ error: "name and value required" }, 400);
       let sealed;
-      if (splitMode(env)) {
+      if (await splitMode(env, space)) {
         // seal on the owner's last-mile worker; the control plane only stores the ciphertext.
         const ref = await env.VAULT.get(K(space, "dek", "active"));
-        const { sealed: s } = await callLastMile(env, "/seal", { plaintext: String(body.value), dek: await activeWrappedDEK(env, space) });
+        const { sealed: s } = await callLastMile(env, space, "/seal", { plaintext: String(body.value), dek: await activeWrappedDEK(env, space) });
         if (ref) s.keyRef = ref; // tag it with the DEK that opens it (the last-mile sealed under that DEK)
         sealed = s;
       } else {
@@ -666,7 +679,7 @@ export default {
       const s = await stepIfSession("vault.rotate");
       if (s) return s;
       let res;
-      if (splitMode(env)) {
+      if (await splitMode(env, space)) {
         // gather every sealed secret + the current active wrapped DEK, hand them to the last-mile
         // worker to re-seal under a fresh DEK, then persist what comes back. Plaintext stays there.
         const secrets = [];
@@ -680,7 +693,7 @@ export default {
           }
           cursor = page.list_complete ? undefined : page.cursor;
         } while (cursor);
-        const out = await callLastMile(env, "/rotate", { secrets, dek: await activeWrappedDEK(env, space) });
+        const out = await callLastMile(env, space, "/rotate", { secrets, dek: await activeWrappedDEK(env, space) });
         await env.VAULT.put(K(space, "dek", out.dek.ref), JSON.stringify({ ...out.dek, created: new Date().toISOString() }));
         await env.VAULT.put(K(space, "dek", "active"), out.dek.ref);
         for (const s of out.secrets) await env.VAULT.put(K(space, "secret", s.name), JSON.stringify(s.sealed));
@@ -690,6 +703,37 @@ export default {
       }
       await logEvent(env, space, "vault.rotate", { ref: res.ref, rotated: res.rotated });
       return json({ ok: true, ...res });
+    }
+
+    // ── connect THIS space to its OWN last-mile worker (the tenant's sovereign vault on their
+    // Cloudflare). Owner-gated. We store only the URL + relay token to reach it — never a customer
+    // key. Once connected, the space is split-routed and the control plane holds only ciphertext. ──
+    if (path === "/lastmile/connect" && request.method === "POST") {
+      if (!human) return json({ error: HUMAN_REQUIRED }, 403);
+      { const g = requireSub(); if (g) return g; }
+      const s = await stepIfSession("lastmile.connect");
+      if (s) return s;
+      let h;
+      try { h = new URL(String(body.url || "")); } catch { return json({ error: "url must be a valid https URL" }, 400); }
+      if (h.protocol !== "https:") return json({ error: "last-mile url must be https" }, 400);
+      if (ssrfBlocked(h.host)) return json({ error: "last-mile host not allowed" }, 400);
+      if (!body.key || typeof body.key !== "string") return json({ error: "relay key required" }, 400);
+      const url = h.origin + h.pathname.replace(/\/+$/, "");
+      await env.VAULT.put(K(space, "lastmile", "config"), JSON.stringify({ url, key: String(body.key) }));
+      await logEvent(env, space, "lastmile.connect", { url }); // url only — never the key
+      return json({ ok: true, connected: true, url });
+    }
+    if (path === "/lastmile/status" && request.method === "GET") {
+      const cfg = await lastMileConfig(env, space);
+      return json({ connected: !!cfg, url: cfg ? cfg.url : null, custodial: !cfg });
+    }
+    if (path === "/lastmile/disconnect" && request.method === "POST") {
+      if (!human) return json({ error: HUMAN_REQUIRED }, 403);
+      const s = await stepIfSession("lastmile.disconnect");
+      if (s) return s;
+      await env.VAULT.delete(K(space, "lastmile", "config"));
+      await logEvent(env, space, "lastmile.disconnect", {});
+      return json({ ok: true, connected: false });
     }
 
     // ── issue a card (owner → active; agent → pending, inert until the owner approves) ──
@@ -815,8 +859,8 @@ export default {
         if (!secRaw) return decline("secret missing from vault");
         const sealed = JSON.parse(secRaw);
         let resp, out;
-        if (splitMode(env)) {
-          const r = await callLastMile(env, "/charge", {
+        if (await splitMode(env, space)) {
+          const r = await callLastMile(env, space, "/charge", {
             secret: sealed,
             dek: await wrappedDEKFor(env, space, sealed.keyRef),
             header: card.header,
