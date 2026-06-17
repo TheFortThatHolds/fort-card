@@ -167,8 +167,9 @@ label{font-size:13px;color:#cdc2af;display:block;margin-top:10px}
       <button class="btn p" id="mint" style="margin-top:14px">Mint (tap to confirm)</button>
     </details>
 
-    <h2>Statement</h2>
-    <div id="events" class="card"><div class="muted">Loading…</div></div>
+    <details class="card"><summary style="cursor:pointer">Agent activity log</summary>
+      <div id="events" style="margin-top:10px"><div class="muted">Loading…</div></div>
+    </details>
 
     <footer id="subfoot" class="hide" style="margin:36px 0 14px;padding-top:18px;border-top:1px solid #2c251c;text-align:center">
       <div id="subline" class="muted" style="margin-bottom:10px"></div>
