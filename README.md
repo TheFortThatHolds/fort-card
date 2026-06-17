@@ -2,8 +2,8 @@
 
 ### Issue API credentials like **credit cards**, not keys.
 
-**Just want it to work?** → [![Get your Fort Card — hosted, $8/mo](https://img.shields.io/badge/Get_your_Fort_Card-hosted_%248%2Fmo-b87333?style=for-the-badge)](https://card.thefortthatholds.com/login)
-<br>$8/mo, zero setup, your vault in 30 seconds — sign up at **[card.thefortthatholds.com](https://card.thefortthatholds.com/login)**.
+**Just want it to work?** → [![Get your Fort Card — hosted, $8/mo](https://img.shields.io/badge/Get_your_Fort_Card-hosted_%248%2Fmo-b87333?style=for-the-badge)](https://thefortthatholds.com/fort-card)
+<br>$8/mo, zero setup, your vault in 30 seconds — see what you get and start at **[thefortthatholds.com/fort-card](https://thefortthatholds.com/fort-card)**.
 
 **Rather run your own?** → [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/TheFortThatHolds/fort-card/tree/main/worker) — MIT, your infrastructure, your keys, no one in the loop but you.
 
