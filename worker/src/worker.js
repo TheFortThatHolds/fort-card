@@ -59,6 +59,7 @@ import { handlePasskey } from "./webauthn.js";
 import { resolveAgentBearer, mintAgentBearer, listAgents, revokeAgent } from "./agents.js";
 import { handleApp } from "./app.js";
 import { mintSealTicket } from "./ticket.js";
+import { mintClaimCode, verifyAndConsumeClaim } from "./claim.js";
 import { pushToOwner, addSubscription, removeSubscription, vapidPublicKey, listSubscriptions } from "./push.js";
 import { postComment, appConfigured, getInstallationOwner } from "./github-app.js";
 import { isSubscribed, createCheckout, confirmCheckout, priceCents, billingSummary, cancelSubscription, resumeSubscription } from "./stripe.js";
@@ -463,6 +464,29 @@ export default {
       return json({ ok: true, pending: true, card: rid, note: "Pending the owner's approval (" + cap + ", scoped to " + reqCard.allowed_hosts.join(", ") + "). Once approved it's a bearer card — charge it via /agent/use {repo, card, request}; the owner's approval (and any recharge) is the only gated step." });
     }
 
+    // ── lockbox PHONE-HOME — a freshly-deployed lockbox self-reports its URL, gated only by a
+    // one-time claim code the owner minted in the wallet. NO bearer: the claim code resolves the
+    // space, and the result lands PENDING (the owner's approve tap is still the gate). This is the
+    // friction-killer — the customer types a short code on the deploy screen instead of copying the
+    // worker URL back. Lives in the public block, before the auth wall, because the lockbox has no
+    // wallet credentials. Keep /lastmile/connect (paste-URL) as the additive fallback. ──
+    if (path === "/lockbox/phone-home" && request.method === "POST") {
+      const b = await request.json().catch(() => ({}));
+      const claim = await verifyAndConsumeClaim(env, String(b.claim_code || ""));
+      if (!claim) return json({ error: "invalid or expired claim code" }, 403);
+      const ps = claim.space;
+      if (!b.relay_token) return json({ error: "relay_token required" }, 400);
+      let h;
+      try { h = new URL(String(b.url || "")); } catch { return json({ error: "a valid https url is required" }, 400); }
+      if (h.protocol !== "https:") return json({ error: "url must be https" }, 400);
+      if (ssrfBlocked(h.host)) return json({ error: "url host not allowed" }, 400);
+      const lurl = h.origin + h.pathname.replace(/\/+$/, "");
+      await env.VAULT.put(K(ps, "lastmile", "pending"), JSON.stringify({ url: lurl, key: String(b.relay_token), requested: new Date().toISOString() }));
+      await logEvent(env, ps, "lastmile.phone_home", { url: lurl }); // url only — never the relay token
+      await pushToOwner(env, ps, { title: "Vault waiting to connect", body: lurl + " phoned home. Tap to approve.", url: "/app" });
+      return json({ ok: true, pending: true });
+    }
+
     // WHO is calling, and WHICH space do they operate in?
     //   • OAuth session   → a verified SaaS tenant, operating in their OWN identity-born space.
     //   • FORT_KEY        → the self-host owner (single-tenant, `FORT_SPACE`).
@@ -762,7 +786,47 @@ export default {
     }
     if (path === "/lastmile/status" && request.method === "GET") {
       const cfg = await lastMileConfig(env, space);
-      return json({ connected: !!cfg, url: cfg ? cfg.url : null, custodial: !cfg });
+      const pendingRaw = await env.VAULT.get(K(space, "lastmile", "pending"));
+      const pending = pendingRaw ? (() => { try { return JSON.parse(pendingRaw).url; } catch { return null; } })() : null;
+      return json({ connected: !!cfg, url: cfg ? cfg.url : null, custodial: !cfg, pending });
+    }
+    // ── claim-code phone-home onboarding (kills the URL paste) ──
+    // Mint a one-time, short-TTL claim code. Owner-gated. The wallet shows it next to the Deploy
+    // button; the customer types it (plus the control-plane URL) on Cloudflare's deploy screen.
+    if (path === "/lastmile/claim-code" && request.method === "POST") {
+      if (!human) return json({ error: HUMAN_REQUIRED }, 403);
+      { const g = requireSub(); if (g) return g; }
+      // No passkey step here on purpose: minting a code is harmless (it lands PENDING and the
+      // approve tap below is the real gate), so onboarding stays smooth.
+      const code = await mintClaimCode(env, space);
+      await logEvent(env, space, "lastmile.claim_minted", {}); // never log the code
+      // The lockbox also needs to know WHERE to phone home — surface this worker's own origin so the
+      // wallet can show it as the second value to paste. (Public; safe to expose.)
+      return json({ code, ttl_minutes: 30, control_plane_url: url.origin });
+    }
+    // Approve a pending phone-home → promote it to the space's active last-mile config. Owner-gated,
+    // passkey step — this is the gate that a leaked claim code can never pass.
+    if (path === "/lastmile/pending/approve" && request.method === "POST") {
+      if (!human) return json({ error: HUMAN_REQUIRED }, 403);
+      { const g = requireSub(); if (g) return g; }
+      const s = await stepIfSession("lastmile.approve");
+      if (s) return s;
+      const raw = await env.VAULT.get(K(space, "lastmile", "pending"));
+      if (!raw) return json({ error: "no vault is waiting to connect" }, 409);
+      const p = JSON.parse(raw);
+      await env.VAULT.put(K(space, "lastmile", "config"), JSON.stringify({ url: p.url, key: p.key }));
+      await env.VAULT.delete(K(space, "lastmile", "pending"));
+      await logEvent(env, space, "lastmile.connect", { url: p.url, via: "phone-home" }); // url only
+      return json({ ok: true, connected: true, url: p.url });
+    }
+    // Reject / clear a pending phone-home (didn't recognize it, or changing course). Owner-gated.
+    if (path === "/lastmile/pending/reject" && request.method === "POST") {
+      if (!human) return json({ error: HUMAN_REQUIRED }, 403);
+      const s = await stepIfSession("lastmile.reject");
+      if (s) return s;
+      await env.VAULT.delete(K(space, "lastmile", "pending"));
+      await logEvent(env, space, "lastmile.pending_reject", {});
+      return json({ ok: true });
     }
     if (path === "/lastmile/disconnect" && request.method === "POST") {
       if (!human) return json({ error: HUMAN_REQUIRED }, 403);
