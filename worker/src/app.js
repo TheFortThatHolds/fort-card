@@ -169,6 +169,19 @@ label{font-size:13px;color:#cdc2af;display:block;margin-top:10px}
 
     <h2>Statement</h2>
     <div id="events" class="card"><div class="muted">Loading…</div></div>
+
+    <footer id="subfoot" class="hide" style="margin:36px 0 14px;padding-top:18px;border-top:1px solid #2c251c;text-align:center">
+      <div id="subline" class="muted" style="margin-bottom:10px"></div>
+      <button class="btn sm" id="cancelsub" style="display:none">Cancel subscription</button>
+      <button class="btn p sm" id="resumesub" style="display:none">Resume subscription</button>
+      <!-- Two-step confirm: a stray scroll-tap on "Cancel" only OPENS this; the prominent choice is
+           "Keep", and cancelling needs a second, deliberate tap on the quieter "Yes, cancel". -->
+      <div id="cancelconfirm" class="hide">
+        <div id="cancelconfirmmsg" class="muted" style="margin-bottom:12px"></div>
+        <button class="btn p sm" id="cancelkeep">Keep my subscription</button>
+        <button class="btn sm" id="canceldo" style="margin-left:10px;color:#e7857a;border-color:#5a3a36">Yes, cancel</button>
+      </div>
+    </footer>
   </div>
 </div>
 <div class="toast" id="toast"></div>
@@ -180,7 +193,7 @@ const b2b=b=>btoa(String.fromCharCode(...new Uint8Array(b))).replace(/\\+/g,'-')
 const s2b=s=>{s=s.replace(/-/g,'+').replace(/_/g,'/');return Uint8Array.from(atob(s+'='.repeat((4-s.length%4)%4)),c=>c.charCodeAt(0))};
 async function jget(p,o){const r=await api(p,o);let j={};try{j=await r.json()}catch{}if(!r.ok)throw new Error(j.error||('HTTP '+r.status));return j}
 
-let me='',hasPk=false;
+let me='',hasPk=false,__bill=null;
 function pkmsg(html){$('#pkstate').innerHTML=html}
 function regSW(){if('serviceWorker'in navigator)navigator.serviceWorker.register('/app/sw.js',{scope:'/app'}).catch(()=>{})}
 function showApp(){$('#signin').classList.add('hide');$('#lock').classList.add('hide');$('#app').classList.remove('hide');load();maybeNudge()}
@@ -330,6 +343,42 @@ $('#subbtn')&&($('#subbtn').onclick=async()=>{
     if(r.url)location.href=r.url;else{m.innerHTML='<b style="color:#e7857a">No checkout URL returned.</b>';$('#subbtn').disabled=false}
   }catch(e){m.innerHTML='<b style="color:#e7857a">'+(e.message||'failed')+'</b>';$('#subbtn').disabled=false}
 });
+// ── subscription footer: shows renewal/cancel state and the one-tap cancel (and resume). Only on a
+// managed (billed) instance; self-host has nothing to manage so the footer stays hidden. ──
+function fmtDate(ts){try{return ts?new Date(ts*1000).toLocaleDateString(undefined,{year:'numeric',month:'short',day:'numeric'}):null}catch{return null}}
+function renderBilling(bill){
+  __bill=bill;const foot=$('#subfoot');if(!foot)return;
+  if(!bill||!bill.enabled){foot.classList.add('hide');return}
+  foot.classList.remove('hide');
+  const line=$('#subline'),cancel=$('#cancelsub'),resume=$('#resumesub'),end=fmtDate(bill.current_period_end);
+  const price='$'+(((bill.price_cents||800)/100).toFixed(0).replace(/\\.0$/,''));
+  $('#cancelconfirm').classList.add('hide'); // always reset the confirm step on any re-render
+  if(bill.cancel_at_period_end){
+    line.innerHTML='Your subscription ends'+(end?' on <b>'+end+'</b>':'')+'. You keep full access until then.';
+    cancel.style.display='none';resume.style.display='';
+  }else{
+    line.textContent='Fort Card · '+price+'/mo'+(end?' · renews '+end:'')+' · cancel anytime';
+    cancel.style.display='';resume.style.display='none';
+  }
+}
+// Tap "Cancel" → only OPENS the confirm step (nothing is cancelled yet). An accidental bump lands here,
+// where "Keep" is the prominent button; cancelling needs a second deliberate tap on "Yes, cancel".
+$('#cancelsub')&&($('#cancelsub').onclick=()=>{
+  const end=fmtDate(__bill&&__bill.current_period_end);
+  $('#cancelconfirmmsg').innerHTML='Cancel Fort Card?'+(end?' You keep full access until <b>'+end+'</b>, then it lapses.':' You keep access until your period ends.')+' You can resume any time before then.';
+  $('#cancelsub').style.display='none';$('#cancelconfirm').classList.remove('hide');
+});
+$('#cancelkeep')&&($('#cancelkeep').onclick=()=>{ $('#cancelconfirm').classList.add('hide');$('#cancelsub').style.display=''; }); // backed out — no change
+$('#canceldo')&&($('#canceldo').onclick=async()=>{
+  $('#canceldo').disabled=true;
+  try{const r=await jget('/billing/cancel',{method:'POST',headers:{'Content-Type':'application/json'}});renderBilling({...__bill,...r});toast('Cancellation scheduled — active until '+(fmtDate(r.current_period_end)||'period end'))}
+  catch(e){toast(e.message||'cancel failed')}finally{$('#canceldo').disabled=false}
+});
+$('#resumesub')&&($('#resumesub').onclick=async()=>{
+  $('#resumesub').disabled=true;
+  try{const r=await jget('/billing/resume',{method:'POST',headers:{'Content-Type':'application/json'}});renderBilling({...__bill,...r});toast('Subscription resumed ✓')}
+  catch(e){toast(e.message||'resume failed')}finally{$('#resumesub').disabled=false}
+});
 $('#enroll').onclick=enroll;
 $('#unlock').onclick=unlock;
 $('#pushbtn').onclick=enablePush;
@@ -352,6 +401,7 @@ $('#mint').onclick=()=>act(async()=>{const ttl=$('#a_ttl').value;const r=await j
     history.replaceState({},'',location.pathname);
   }else if(qp.get('billing')==='cancel'){toast('Checkout canceled');history.replaceState({},'',location.pathname)}
   if(bill.enabled&&!bill.subscribed){showGate(bill);return regSW()}
+  renderBilling(bill); // managed + subscribed: show the manage/cancel footer at the bottom of the wallet
   // GitHub is the floor. If this device has a passkey, a tap opens the wallet (every time).
   // If it doesn't (new/replacement device), GitHub alone gets you in to enable one — no lockout.
   let has=false;try{has=((await jget('/passkey/list')).passkeys||[]).length>0}catch{}

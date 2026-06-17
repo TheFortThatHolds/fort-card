@@ -106,16 +106,23 @@ export async function confirmCheckout(env, charge, space, sessionId) {
   if (!paid) return { subscribed: false, reason: "payment not complete (" + s.status + "/" + s.payment_status + ")" };
   const sub = s.subscription && typeof s.subscription === "object" ? s.subscription : null;
   const prev = (await readBilling(env, space)) || {};
+  // firstActivation = this space wasn't already active — used to fire the welcome email exactly once
+  // (a duplicate confirm call on the same return won't re-send, because prev is active by then).
+  const firstActivation = !subActive(prev.status);
   const rec = {
     ...prev,
     customer: s.customer || prev.customer || null,
+    // Stripe puts the payer's email on customer_details for a completed Checkout session; keep it so
+    // the worker can send the welcome/receipt email without a second Stripe round-trip.
+    email: (s.customer_details && s.customer_details.email) || s.customer_email || prev.email || null,
     subscription: sub ? sub.id : s.subscription || prev.subscription || null,
     status: sub ? sub.status : "active",
     current_period_end: sub ? sub.current_period_end : prev.current_period_end || null,
+    cancel_at_period_end: sub ? !!sub.cancel_at_period_end : false,
     updated: Date.now(),
   };
   await writeBilling(env, space, rec);
-  return { subscribed: true, ...rec };
+  return { subscribed: true, firstActivation, ...rec };
 }
 
 // Is this space subscribed right now? Trust the cached record until its period end, then re-query
@@ -130,10 +137,50 @@ export async function isSubscribed(env, charge, space) {
     const sub = await get(charge, "/subscriptions/" + encodeURIComponent(rec.subscription));
     rec.status = sub.status;
     rec.current_period_end = sub.current_period_end;
+    rec.cancel_at_period_end = !!sub.cancel_at_period_end; // keep the pending-cancel flag truthful
     rec.updated = Date.now();
     await writeBilling(env, space, rec);
     return subActive(sub.status);
   } catch {
     return subActive(rec.status); // card/Stripe unreachable: fall back to last known status, fail-open for payers
   }
+}
+
+// A small read-only summary for /billing/status so the wallet can show "renews <date>" or
+// "ends <date>" and the right button. Names/dates only — never a key, never a card value.
+export async function billingSummary(env, space) {
+  const rec = await readBilling(env, space);
+  if (!rec) return { cancel_at_period_end: false, current_period_end: null };
+  return { cancel_at_period_end: !!rec.cancel_at_period_end, current_period_end: rec.current_period_end || null };
+}
+
+// Cancel — DECISION (Jimmy): at PERIOD END. The customer keeps full access through the period they
+// already paid for, then it lapses. We never cut off mid-period and never prorate a refund — fair,
+// boring, and the opposite of a retention maze. It's reversible until the period actually ends
+// (resumeSubscription flips it back), so a misclick costs nothing. Stripe escalates the sub to
+// `canceled` on its own when the period ends; isSubscribed then naturally returns false.
+export async function cancelSubscription(env, charge, space) {
+  const rec = await readBilling(env, space);
+  if (!rec || !rec.subscription) return { ok: false, reason: "no active subscription" };
+  const sub = await post(charge, "/subscriptions/" + encodeURIComponent(rec.subscription), { cancel_at_period_end: true });
+  rec.status = sub.status;
+  rec.current_period_end = sub.current_period_end;
+  rec.cancel_at_period_end = true;
+  rec.updated = Date.now();
+  await writeBilling(env, space, rec);
+  return { ok: true, cancel_at_period_end: true, current_period_end: rec.current_period_end, email: rec.email || null };
+}
+
+// Undo a pending cancel (only meaningful while still inside the paid period): flip the flag back off
+// so the subscription renews as normal. No charge moves; it's a one-field update on the live sub.
+export async function resumeSubscription(env, charge, space) {
+  const rec = await readBilling(env, space);
+  if (!rec || !rec.subscription) return { ok: false, reason: "no subscription to resume" };
+  const sub = await post(charge, "/subscriptions/" + encodeURIComponent(rec.subscription), { cancel_at_period_end: false });
+  rec.status = sub.status;
+  rec.current_period_end = sub.current_period_end;
+  rec.cancel_at_period_end = false;
+  rec.updated = Date.now();
+  await writeBilling(env, space, rec);
+  return { ok: true, cancel_at_period_end: false, current_period_end: rec.current_period_end, email: rec.email || null };
 }

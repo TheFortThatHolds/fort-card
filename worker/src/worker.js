@@ -60,7 +60,8 @@ import { resolveAgentBearer, mintAgentBearer, listAgents, revokeAgent } from "./
 import { handleApp } from "./app.js";
 import { pushToOwner, addSubscription, removeSubscription, vapidPublicKey, listSubscriptions } from "./push.js";
 import { postComment, appConfigured, getInstallationOwner } from "./github-app.js";
-import { isSubscribed, createCheckout, confirmCheckout, priceCents } from "./stripe.js";
+import { isSubscribed, createCheckout, confirmCheckout, priceCents, billingSummary, cancelSubscription, resumeSubscription } from "./stripe.js";
+import { sendWelcomeEmail, sendCancelEmail, sendResumeEmail, emailConfigured } from "./email.js";
 import { handleConnect } from "./connect.js";
 
 const enc = new TextEncoder();
@@ -502,7 +503,10 @@ export default {
     // ── billing routes (session tenants). status is always safe to read; subscribe needs the
     // customer to accept the terms; confirm verifies the Checkout return by querying Stripe. ──
     if (path === "/billing/status" && request.method === "GET") {
-      return json({ enabled: !!env.STRIPE_KEY, subscribed, price_cents: priceCents(env) });
+      // Surface cancel_at_period_end + current_period_end so the wallet can show "renews <date>" vs.
+      // "ends <date>" and the right button. Self-host (billing off) returns the inert defaults.
+      const summary = billingOn ? await billingSummary(env, space) : { cancel_at_period_end: false, current_period_end: null };
+      return json({ enabled: !!env.STRIPE_KEY, subscribed, price_cents: priceCents(env), ...summary });
     }
     if (path === "/billing/subscribe" && request.method === "POST") {
       if (!session) return json({ error: "sign in to subscribe" }, 401);
@@ -525,9 +529,52 @@ export default {
       try {
         const r = await confirmCheckout(env, charge, space, body.session_id);
         if (r.subscribed) await logEvent(env, space, "billing.active", { subscription: r.subscription });
+        // Welcome/thank-you email on the FIRST activation only (firstActivation guards re-sends on a
+        // duplicate confirm). Best-effort: a Resend hiccup must never fail the subscription confirm.
+        if (r.subscribed && r.firstActivation && emailConfigured(env)) {
+          const mail = await sendWelcomeEmail(env, { to: r.email, space, origin: url.origin });
+          await logEvent(env, space, "billing.welcome_email", mail);
+        }
         return json(r);
       } catch (e) {
         return json({ error: (e && e.message) || "could not confirm checkout" }, 502);
+      }
+    }
+    // Cancel — one tap, no maze. DECISION: at period end (keep what you paid for, then lapse).
+    // Reversible via /billing/resume until the period actually ends. Sits with the other /billing/*
+    // routes ABOVE the door so it's always reachable by a signed-in tenant.
+    if (path === "/billing/cancel" && request.method === "POST") {
+      if (!session) return json({ error: "sign in first" }, 401);
+      if (!env.STRIPE_KEY) return json({ error: "billing is not enabled on this instance" }, 400);
+      try {
+        const r = await cancelSubscription(env, charge, space);
+        if (r.ok) {
+          await logEvent(env, space, "billing.cancel_scheduled", { current_period_end: r.current_period_end });
+          if (emailConfigured(env)) {
+            const mail = await sendCancelEmail(env, { to: r.email, space, origin: url.origin, current_period_end: r.current_period_end });
+            await logEvent(env, space, "billing.cancel_email", mail);
+          }
+        }
+        return json(r);
+      } catch (e) {
+        return json({ error: (e && e.message) || "could not cancel" }, 502);
+      }
+    }
+    if (path === "/billing/resume" && request.method === "POST") {
+      if (!session) return json({ error: "sign in first" }, 401);
+      if (!env.STRIPE_KEY) return json({ error: "billing is not enabled on this instance" }, 400);
+      try {
+        const r = await resumeSubscription(env, charge, space);
+        if (r.ok) {
+          await logEvent(env, space, "billing.resumed", {});
+          if (emailConfigured(env)) {
+            const mail = await sendResumeEmail(env, { to: r.email, space, origin: url.origin, current_period_end: r.current_period_end });
+            await logEvent(env, space, "billing.resume_email", mail);
+          }
+        }
+        return json(r);
+      } catch (e) {
+        return json({ error: (e && e.message) || "could not resume" }, 502);
       }
     }
 
