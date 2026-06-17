@@ -182,6 +182,14 @@ label{font-size:13px;color:#cdc2af;display:block;margin-top:10px}
       <button class="btn sm back" data-back>← Back</button>
       <h2>Vault — your keys</h2>
       <p class="muted" style="margin-bottom:14px">The keys your cards draw on. Add a key, or roll one over in place — every card pointing at it picks up the new value automatically, no re-issuing.</p>
+      <div class="card" id="lmcard">
+        <div id="lmstatus" class="muted">Checking your vault…</div>
+        <div id="lmconnect" class="hide">
+          <label>Your last-mile worker URL<input id="lm_url" placeholder="https://fort-card-last-mile.you.workers.dev"></label>
+          <button class="btn p" id="lmconnectbtn" style="margin-top:12px">Connect my vault (tap to confirm)</button>
+          <div class="muted" style="margin-top:8px">Deploy your last-mile worker, paste its URL here, and we claim the link for you — no tokens to copy. Your key seals inside <em>your</em> worker; we only ever hold ciphertext.</div>
+        </div>
+      </div>
       <div id="secrets"><div class="muted">Loading…</div></div>
       <details class="card"><summary style="cursor:pointer">Add a key</summary>
         <label>Name<input id="s_name" placeholder="openai-key"></label>
@@ -297,6 +305,20 @@ async function storeKey(name,value){
     await jget('/secrets',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,value})});
   }
 }
+// Vault connection state: is this space sealing on the tenant's own last-mile, or not yet?
+async function refreshLastmile(){
+  const el=$('#lmstatus');if(!el)return;
+  try{
+    const st=await jget('/lastmile/status');
+    if(st.connected){
+      el.innerHTML='<b style="color:#7fae6d">✓ Your vault is connected</b> — keys seal in your own worker.<div class="muted" style="margin-top:4px;word-break:break-all">'+st.url+'</div>';
+      $('#lmconnect').classList.add('hide');
+    }else{
+      el.innerHTML='<b style="color:#e7a85a">No vault connected yet.</b> Connect your last-mile so your keys seal on your own infra — until then there\\'s nowhere to store them.';
+      $('#lmconnect').classList.remove('hide');
+    }
+  }catch(_){el.textContent=''}
+}
 // roll a key over: fingerprint pops, paste the new value, it overwrites in place. The old value is
 // gone; cards pointing at this name now draw on the new key. No re-issuing cards needed.
 async function rollover(name){
@@ -409,8 +431,9 @@ $('#store').onclick=()=>{if(!$('#s_name').value||!$('#s_val').value){toast('Name
 
 // ── views: home / vault / log (single page, no reload) ──
 function showView(v){['home','vault','log'].forEach(n=>{const el=$('#view-'+n);if(el)el.classList.toggle('hide',n!==v)});if(v!=='home')scrollTo(0,0)}
-$('#tile-vault')&&($('#tile-vault').onclick=()=>showView('vault'));
+$('#tile-vault')&&($('#tile-vault').onclick=()=>{showView('vault');refreshLastmile()});
 $('#tile-log')&&($('#tile-log').onclick=()=>{showView('log');loadEvents()});
+$('#lmconnectbtn')&&($('#lmconnectbtn').onclick=()=>{const u=$('#lm_url').value.trim();if(!u){toast('Paste your last-mile URL');return}act(async()=>{await jget('/lastmile/connect',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:u})});$('#lm_url').value='';await refreshLastmile()},'Vault connected ✓')});
 document.querySelectorAll('[data-back]').forEach(b=>b.onclick=()=>showView('home'));
 
 // ── the log: a human-readable type plus the detail the ledger already records ──

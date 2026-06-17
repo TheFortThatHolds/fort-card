@@ -669,6 +669,9 @@ export default {
         sealed = { iv: body.sealed.iv, ct: body.sealed.ct };
         if (ref) sealed.keyRef = ref; // tag with the DEK that opens it
       } else {
+        // No last-mile and no inline MASTER_KEY (a hosted tenant who hasn't connected their vault):
+        // there's nowhere non-custodial to seal a key. Tell them to connect first.
+        if (!env.MASTER_KEY) return json({ error: "connect your last-mile vault first (Vault → Connect my vault) — there's nowhere to seal a key yet" }, 409);
         if (!body.value) return json({ error: "name and value required" }, 400);
         sealed = await encrypt(env, space, String(body.value));
       }
@@ -721,13 +724,27 @@ export default {
       const s = await stepIfSession("lastmile.connect");
       if (s) return s;
       let h;
-      try { h = new URL(String(body.url || "")); } catch { return json({ error: "url must be a valid https URL" }, 400); }
+      try { h = new URL(String(body.url || "")); } catch { return json({ error: "enter your last-mile worker's https URL" }, 400); }
       if (h.protocol !== "https:") return json({ error: "last-mile url must be https" }, 400);
       if (ssrfBlocked(h.host)) return json({ error: "last-mile host not allowed" }, 400);
-      if (!body.key || typeof body.key !== "string") return json({ error: "relay key required" }, 400);
-      const url = h.origin + h.pathname.replace(/\/+$/, "");
-      await env.VAULT.put(K(space, "lastmile", "config"), JSON.stringify({ url, key: String(body.key) }));
-      await logEvent(env, space, "lastmile.connect", { url }); // url only — never the key
+      const base = h.origin + h.pathname.replace(/\/+$/, "");
+      // Claim the relay token SERVER-TO-SERVER: the worker self-minted it and hands it out ONCE via
+      // /bootstrap. The control plane grabs it directly, so the customer (and their agent) never
+      // copies a token — they only paste the worker's URL. (First-call-wins: deploy, then connect.)
+      let creds;
+      try {
+        const r = await fetch(base + "/bootstrap", { headers: { "User-Agent": "fort-card-control-plane" } });
+        creds = await r.json().catch(() => ({}));
+        if (!r.ok || !creds.last_mile_key) {
+          const already = creds && creds.error && /already claimed/i.test(creds.error);
+          return json({ error: already ? "that worker's link was already claimed — deploy a fresh last-mile and connect again" : "couldn't claim the last-mile at that URL (" + r.status + ")" }, 400);
+        }
+      } catch {
+        return json({ error: "couldn't reach that last-mile URL — check it's deployed and correct" }, 400);
+      }
+      const url = String(creds.last_mile_url || base).replace(/\/+$/, "");
+      await env.VAULT.put(K(space, "lastmile", "config"), JSON.stringify({ url, key: String(creds.last_mile_key) }));
+      await logEvent(env, space, "lastmile.connect", { url }); // url only — never the token
       return json({ ok: true, connected: true, url });
     }
     // Mint a one-shot, short-TTL ticket so the tenant's BROWSER can seal a value at their own
