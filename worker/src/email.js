@@ -5,7 +5,7 @@
 // (same posture as STRIPE_KEY).
 //
 //   secret RESEND_KEY     your Resend API key (email ON iff set)
-//   var    WELCOME_FROM   From header — a verified Resend sender, e.g. "Fort Card <hello@thefortthatholds.com>"
+//   var    WELCOME_FROM   From header — a verified Resend sender, e.g. "Fort Card <hello@yourdomain.com>"
 
 const ESC = (s) => String(s == null ? "" : s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 const fmtDate = (ts) => { try { return ts ? new Date(ts * 1000).toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" }) : null; } catch { return null; } };

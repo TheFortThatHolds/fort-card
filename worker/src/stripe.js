@@ -154,7 +154,7 @@ export async function billingSummary(env, space) {
   return { cancel_at_period_end: !!rec.cancel_at_period_end, current_period_end: rec.current_period_end || null };
 }
 
-// Cancel — DECISION (Jimmy): at PERIOD END. The customer keeps full access through the period they
+// Cancel — DESIGN: at PERIOD END. The customer keeps full access through the period they
 // already paid for, then it lapses. We never cut off mid-period and never prorate a refund — fair,
 // boring, and the opposite of a retention maze. It's reversible until the period actually ends
 // (resumeSubscription flips it back), so a misclick costs nothing. Stripe escalates the sub to
