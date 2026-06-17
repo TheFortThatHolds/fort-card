@@ -165,6 +165,25 @@ export async function logEvent(env, space, type, data) {
   await env.VAULT.put(K(space, "event", ts, crypto.randomUUID().slice(0, 8)), JSON.stringify({ ts, type, ...data }));
 }
 
+// Wipe an ENTIRE space: every KV key under the "<space>:" prefix — secrets, cards, bearers, events,
+// billing, passkeys, push subscriptions, the lot. The colon delimiter makes the prefix exact, so a
+// space named "ab" can never catch "abc:". Paginates the listing so it completes past 1000 keys.
+// Used by on-demand erasure (GDPR Art 17) and, later, the lapse-purge cron. Irreversible.
+export async function purgeSpace(env, space) {
+  const prefix = space + ":";
+  let cursor;
+  let deleted = 0;
+  do {
+    const page = await env.VAULT.list({ prefix, cursor });
+    for (const k of page.keys) {
+      await env.VAULT.delete(k.name);
+      deleted++;
+    }
+    cursor = page.list_complete ? undefined : page.cursor;
+  } while (cursor);
+  return deleted;
+}
+
 // ── SPLIT DEPLOY: the last mile (decrypt + inject + fetch) can be delegated to a separate
 // worker on the OWNER's own Cloudflare. When LAST_MILE_URL + LAST_MILE_KEY are set, THIS worker
 // (the control plane) holds only ciphertext and never touches MASTER_KEY — it relays sealed
@@ -757,6 +776,64 @@ export default {
         if (raw) events.push(JSON.parse(raw));
       }
       return json({ events });
+    }
+
+    // ── DATA EXPORT (GDPR Arts 15 & 20 — access + portability). Everything we hold for this space in
+    // one JSON: the full statement, card configs, the NAMES of stored secrets (never the values — the
+    // wallet itself can't read them), agent bearer labels, billing summary. Human + unlock; NOT
+    // subscription-gated — the right to your own data doesn't depend on an active plan. ──
+    if (path === "/export" && request.method === "GET") {
+      if (!human) return json({ error: HUMAN_REQUIRED }, 403);
+      { const s = await stepIfSession("data.export"); if (s) return s; }
+      const events = [];
+      {
+        let cursor;
+        const ep = K(space, "event", "");
+        do {
+          const page = await env.VAULT.list({ prefix: ep, cursor });
+          for (const k of page.keys) { const raw = await env.VAULT.get(k.name); if (raw) events.push(JSON.parse(raw)); }
+          cursor = page.list_complete ? undefined : page.cursor;
+        } while (cursor);
+        events.sort((a, b) => (a.ts < b.ts ? 1 : a.ts > b.ts ? -1 : 0)); // newest first
+      }
+      const cards = [];
+      {
+        const cp = K(space, "card", "");
+        const list = await env.VAULT.list({ prefix: cp });
+        for (const k of list.keys) {
+          const raw = await env.VAULT.get(k.name);
+          if (!raw) continue;
+          const c = JSON.parse(raw);
+          cards.push({ id: c.id, name: c.name, secret: c.secret, allowed_hosts: c.allowed_hosts, limit: c.limit, used: c.used, holder: c.holder ?? null, expires_at: c.expires_at, frozen: c.frozen, pending: c.pending || false });
+        }
+      }
+      const sp = K(space, "secret", "");
+      const slist = await env.VAULT.list({ prefix: sp });
+      const secret_names = slist.keys.map((k) => k.name.slice(sp.length));
+      const billing = billingOn ? await billingSummary(env, space) : { cancel_at_period_end: false, current_period_end: null };
+      return json({
+        space,
+        generated_at: new Date().toISOString(),
+        note: "Your Fort Card data export. Secret VALUES are never included — the wallet cannot read them.",
+        billing,
+        secret_names,
+        cards,
+        events,
+      });
+    }
+
+    // ── ERASE EVERYTHING (GDPR Art 17 — right to erasure, on demand, BEFORE any lapse timer). The UI
+    // does the two-step confirm; here we require a human + unlock + an explicit { confirm: "DELETE" }.
+    // Cancels the Stripe subscription first (best-effort, so there's no future charge for data that's
+    // gone), then wipes the whole space. Irreversible. NOT subscription-gated — you can always delete
+    // your own data. ──
+    if (path === "/erase" && request.method === "POST") {
+      if (!human) return json({ error: HUMAN_REQUIRED }, 403);
+      { const s = await stepIfSession("data.erase"); if (s) return s; }
+      if (body.confirm !== "DELETE") return json({ error: "confirmation required", code: "confirm_required" }, 400);
+      if (billingOn && subscribed && charge) { try { await cancelSubscription(env, charge, space); } catch (_) { /* never block erasure on Stripe */ } }
+      const deleted = await purgeSpace(env, space);
+      return json({ erased: true, space, keys_deleted: deleted });
     }
 
     // ── /cards/:id  (use · freeze · revoke) ──

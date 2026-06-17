@@ -171,6 +171,18 @@ label{font-size:13px;color:#cdc2af;display:block;margin-top:10px}
       <div id="events" style="margin-top:10px"><div class="muted">Loading…</div></div>
     </details>
 
+    <details class="card"><summary style="cursor:pointer">Your data &amp; privacy</summary>
+      <p class="muted" style="margin:10px 0">Download everything we hold for your space, or erase it permanently. Secret values are never exported — the wallet can't read them.</p>
+      <button class="btn sm" id="exportdata">Download my data (JSON)</button>
+      <button class="btn sm" id="erasedata" style="margin-left:10px;color:#e7857a;border-color:#5a3a36">Delete everything</button>
+      <!-- Two-step confirm: "Delete everything" only OPENS this; "Keep my data" is the prominent way out. -->
+      <div id="eraseconfirm" class="hide" style="margin-top:14px">
+        <div class="muted" style="margin-bottom:12px">This permanently deletes your secrets, cards, bearers, and statement — and cancels your subscription. It cannot be undone.</div>
+        <button class="btn p sm" id="erasekeep">Keep my data</button>
+        <button class="btn sm" id="erasedo" style="margin-left:10px;color:#e7857a;border-color:#5a3a36">Yes, delete everything</button>
+      </div>
+    </details>
+
     <footer id="subfoot" class="hide" style="margin:36px 0 14px;padding-top:18px;border-top:1px solid #2c251c;text-align:center">
       <div id="subline" class="muted" style="margin-bottom:10px"></div>
       <button class="btn sm" id="cancelsub" style="display:none">Cancel subscription</button>
@@ -388,6 +400,18 @@ $('#notifbtn').onclick=()=>enablePush().then(()=>$('#notifbar').classList.add('h
 $('#issue').onclick=()=>{const hosts=$('#c_hosts').value.split(',').map(s=>s.trim()).filter(Boolean);const lim=$('#c_limit').value;act(async()=>{await jget('/cards',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:$('#c_name').value,secret:$('#c_secret').value,allowed_hosts:hosts,limit:lim?+lim:undefined})});$('#c_name').value='';$('#c_secret').value='';$('#c_hosts').value='';$('#c_limit').value=''},'Card issued ✓')};
 $('#store').onclick=()=>{if(!$('#s_name').value||!$('#s_val').value){toast('Name and value required');return}act(async()=>{await jget('/secrets',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:$('#s_name').value,value:$('#s_val').value})});$('#s_name').value='';$('#s_val').value=''},'Secret stored ✓')};
 $('#mint').onclick=()=>act(async()=>{const ttl=$('#a_ttl').value;const r=await jget('/agents',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({label:$('#a_label').value||'agent',ttl_days:ttl?+ttl:undefined})});alert('Bearer (shown ONCE — copy it now):\\n\\n'+r.token)});
+// Data & privacy (GDPR): export your data, or erase everything on demand.
+const lockaware=(m)=>{if((m||'').indexOf('lock')>=0&&hasPk){toast('Locked — tap to unlock');showLock(me);return true}return false};
+$('#exportdata')&&($('#exportdata').onclick=async()=>{
+  try{const d=await jget('/export');const blob=new Blob([JSON.stringify(d,null,2)],{type:'application/json'});
+    const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='fort-card-export-'+(d.generated_at||'').slice(0,10)+'.json';document.body.append(a);a.click();a.remove();URL.revokeObjectURL(a.href);toast('Downloaded ✓')}
+  catch(e){const m=e.message||'';if(!lockaware(m))toast(m||'export failed')}});
+$('#erasedata')&&($('#erasedata').onclick=()=>{$('#eraseconfirm').classList.remove('hide')});
+$('#erasekeep')&&($('#erasekeep').onclick=()=>{$('#eraseconfirm').classList.add('hide')});
+$('#erasedo')&&($('#erasedo').onclick=async()=>{$('#erasedo').disabled=true;
+  try{await jget('/erase',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({confirm:'DELETE'})});
+    toast('Everything deleted.');setTimeout(()=>location.reload(),1200)}
+  catch(e){const m=e.message||'';$('#erasedo').disabled=false;if(!lockaware(m))toast(m||'erase failed')}});
 
 (async()=>{
   let w;try{w=await jget('/whoami')}catch{$('#signin').classList.remove('hide');return regSW()}
