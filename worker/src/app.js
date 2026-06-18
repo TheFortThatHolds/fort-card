@@ -351,6 +351,7 @@ async function load(){
 // control plane only ever receives ciphertext — it never touches a plaintext key. (The non-lockbox
 // branch only fires on a self-host worker that carries its own MASTER_KEY.)
 async function storeKey(name,value){
+  value=String(value).trim(); // strip paste whitespace/newlines — a stray \n gets sealed INTO the token and rejected upstream as invalid
   let st={connected:false};try{st=await jget('/lastmile/status')}catch(_){}
   if(st.connected){
     const t=await jget('/lastmile/seal-ticket',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
