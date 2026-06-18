@@ -60,8 +60,9 @@ function mockFetch(routes) {
 
   // 3b. DEFAULT_SCOPES covers the provisioning calls the callback makes (account + workers + kv)
   {
-    ok(/\baccount:read\b/.test(DEFAULT_SCOPES), "default scopes include account:read");
-    ok(/\bworkers_scripts:write\b/.test(DEFAULT_SCOPES) && /\bworkers_kv_storage:write\b/.test(DEFAULT_SCOPES), "default scopes include workers script + kv write");
+    ok(/account-settings\.read/.test(DEFAULT_SCOPES), "default scopes include account-settings.read (self-managed-client format)");
+    ok(/workers-scripts\.write/.test(DEFAULT_SCOPES) && /workers-kv-storage\.write/.test(DEFAULT_SCOPES), "default scopes include workers-scripts.write + workers-kv-storage.write");
+    ok(!/[:_]/.test(DEFAULT_SCOPES.replace(/\s/g, "")), "scopes use dash/dot form, not wrangler's underscore/colon form");
   }
 
   // 4. token exchange sends code_verifier, no client_secret; surfaces failures

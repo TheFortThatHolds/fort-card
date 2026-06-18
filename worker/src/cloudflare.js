@@ -33,16 +33,17 @@ export async function generatePkce() {
 export const DEFAULT_AUTHORIZE_URL = "https://dash.cloudflare.com/oauth2/auth";
 export const DEFAULT_TOKEN_URL = "https://dash.cloudflare.com/oauth2/token";
 
-// Cloudflare's consent form needs the exact scopes being granted — sending NONE makes the consent
-// page error, and the requested scopes must be a SUBSET of the ones registered on the OAuth client
-// (a stray scope → `invalid_scope`). So this is the tight set the provisioning actually needs, all
-// canonical Cloudflare API-token-style permissions (the same vocabulary you pick in the client's
-// scope list): account:read to find the account, workers_kv_storage:write to create the KV,
-// workers_scripts:write to upload the lockbox + flip on its workers.dev route. NO offline_access —
+// Cloudflare's consent form needs the exact scopes being granted, and they must MATCH the strings
+// registered on the self-managed OAuth client (a stray/misnamed scope → `invalid_scope`). NOTE the
+// format: self-managed OAuth clients use dash-and-dot scope ids (`workers-scripts.write`), NOT the
+// underscore-and-colon form wrangler's first-party client uses (`workers_scripts:write`). These are
+// the exact three the client registered, copied from its scope panel — the tight set provisioning
+// needs: account-settings.read to find the account, workers-kv-storage.write to create the KV,
+// workers-scripts.write to upload the lockbox + flip on its workers.dev route. NO offline_access —
 // that's an OIDC refresh concept, not a Cloudflare scope, and one-shot provisioning never refreshes.
 // Env-overridable (CF_OAUTH_SCOPES) so an instance can match whatever its client registered.
 export const DEFAULT_SCOPES =
-  "account:read workers_kv_storage:write workers_scripts:write";
+  "account-settings.read workers-kv-storage.write workers-scripts.write";
 export async function discover(env) {
   return {
     authorization_endpoint: env.CF_OAUTH_AUTHORIZE_URL || DEFAULT_AUTHORIZE_URL,
