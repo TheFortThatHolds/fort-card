@@ -1,7 +1,7 @@
 // Connect Cloudflare OAuth + provisioning helpers — PKCE, discovery, authorize URL, token exchange,
 // and the Cloudflare API calls (against a mock fetch). Run: node test/cloudflare.test.mjs
 import {
-  generatePkce, discover, buildAuthorizeUrl, exchangeCode,
+  generatePkce, discover, DEFAULT_AUTHORIZE_URL, DEFAULT_TOKEN_URL, buildAuthorizeUrl, exchangeCode,
   firstAccountId, createKvNamespace, uploadLockbox, enableWorkersDev, fetchLockboxSource,
 } from "../src/cloudflare.js";
 
@@ -38,12 +38,12 @@ function mockFetch(routes) {
     ok(/^[A-Za-z0-9_-]+$/.test(challenge) && challenge !== verifier, "challenge is the S256 of verifier, url-safe");
   }
 
-  // 2. discovery reads endpoints from the metadata doc; missing endpoints throw
+  // 2. fixed Cloudflare endpoints (no network), env-overridable
   {
-    const f = mockFetch([[".well-known", { json: { authorization_endpoint: "https://cf/auth", token_endpoint: "https://cf/token" } }]]);
-    const d = await discover({}, f);
-    ok(d.authorization_endpoint === "https://cf/auth" && d.token_endpoint === "https://cf/token", "discover returns both endpoints");
-    await okThrow(() => discover({}, mockFetch([[".well-known", { json: {} }]])), "discover throws when endpoints absent");
+    const d = await discover({});
+    ok(d.authorization_endpoint === DEFAULT_AUTHORIZE_URL && d.token_endpoint === DEFAULT_TOKEN_URL, "discover returns the fixed Cloudflare endpoints");
+    const d2 = await discover({ CF_OAUTH_AUTHORIZE_URL: "https://x/a", CF_OAUTH_TOKEN_URL: "https://x/t" });
+    ok(d2.authorization_endpoint === "https://x/a" && d2.token_endpoint === "https://x/t", "env overrides the endpoints");
   }
 
   // 3. authorize URL carries PKCE + code response type; omits empty scope
