@@ -285,8 +285,6 @@ async function callTool(name, args, env, principal) {
       const view = {
         id: c.id, name: c.name, allowed_hosts: c.allowed_hosts,
         remaining: c.limit != null ? Math.max(0, c.limit - c.used) : null,
-        // DEBUG (temporary): exact auth-header construction, JSON so spacing is visible. Never the key.
-        _hdr: JSON.stringify(c.header) + " + " + JSON.stringify(c.header_prefix) + "+<key>",
       };
       if (!c.pending && !c.frozen) usable_cards.push(view);
       else pending_cards.push({ ...view, state: c.pending ? "pending owner approval" : "frozen" });
