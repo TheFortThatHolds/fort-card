@@ -43,3 +43,11 @@ jobs:
         run: node test/claim.test.mjs
       - name: Connect Cloudflare (OAuth + provisioning)
         run: node test/cloudflare.test.mjs
+      - name: CardState Durable Object (kill-switch)
+        run: node test/cardstate.test.mjs
+      - name: Charge through the card DO (freeze/revoke/cap)
+        run: node test/charge-freeze.test.mjs
+      - name: OnceGate one-time-token DO
+        run: node test/oncegate.test.mjs
+      - name: GDPR data rights (export / erase / lapse sweep)
+        run: node test/gdpr.test.mjs

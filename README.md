@@ -135,4 +135,13 @@ Companies are handing API keys to autonomous agents right now, and rightly uneas
 
 ---
 
+## Privacy & data protection
+
+Built for data minimization (the wallet never sees raw key values), with on-demand export and erasure,
+a 30-day grace-then-purge lifecycle for lapsed accounts, and per-action passkey step-up. Operators
+deploying for real should complete the templates: [`PRIVACY.md`](./PRIVACY.md),
+[`SUBPROCESSORS.md`](./SUBPROCESSORS.md), and the GDPR map [`GDPR.md`](./GDPR.md).
+
+---
+
 MIT licensed. Built by [The Fort That Holds](https://thefortthatholds.com). PRs and forks welcome — read the vault, run your own, make it better.
