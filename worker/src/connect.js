@@ -17,7 +17,7 @@
 // Reuses from auth.js: sign, verify, resolveSession, oauthConfigured.
 
 import { resolveSession, oauthConfigured, verify, readCookie } from "./auth.js";
-import { K, chargeCard, logEvent, notifyCardRequest, spaceSubscribed } from "./worker.js";
+import { K, chargeCard, logEvent, notifyCardRequest, spaceSubscribed, listCardStates, cardOp, registerCard } from "./worker.js";
 
 const CODE_TTL = 600;                 // auth code: 10 min
 const TOKEN_TTL = 60 * 60 * 24 * 30;  // agent pass: 30 days
@@ -276,10 +276,8 @@ const TOOLS = [
 async function callTool(name, args, env, principal) {
   const space = principal.space;
   if (name === "wallet_map") {
-    const list = await env.VAULT.list({ prefix: K(space, "card", "") });
     const usable_cards = [], pending_cards = [];
-    for (const k of list.keys) {
-      const c = JSON.parse(await env.VAULT.get(k.name));
+    for (const c of await listCardStates(env, space)) {
       const view = {
         id: c.id, name: c.name, allowed_hosts: c.allowed_hosts,
         remaining: c.limit != null ? Math.max(0, c.limit - c.used) : null,
@@ -291,13 +289,8 @@ async function callTool(name, args, env, principal) {
     const secPrefix = K(space, "secret", "");
     const secList = await env.VAULT.list({ prefix: secPrefix });
     const requestable_secrets = secList.keys.map((k) => k.name.slice(secPrefix.length));
-    // DEBUG (temporary): per-KV-namespace fingerprint, same key /whoami reads. If the agent's `store`
-    // here differs from the PWA's, the agent and the owner are reading different KV stores.
-    let store = await env.VAULT.get("__store_fp");
-    if (!store) { store = crypto.randomUUID(); await env.VAULT.put("__store_fp", store); }
     return {
       space,
-      store,
       usable_cards,
       requestable_secrets,
       pending_cards,
@@ -305,9 +298,8 @@ async function callTool(name, args, env, principal) {
     };
   }
   if (name === "use_card") {
-    const c = await env.VAULT.get(K(space, "card", String(args.card_id)), "json");
-    if (!c) return { error: "no such card — call wallet_map to see usable_cards, or ask_card if the key is a requestable_secret (or have the owner add it if it's neither)" };
-    return await chargeCard(env, space, c, { url: args.url, method: args.method, headers: args.headers, body: args.body });
+    // The card's DO atomically fences + counts; chargeCard declines cleanly if it's missing/frozen.
+    return await chargeCard(env, space, String(args.card_id), { url: args.url, method: args.method, headers: args.headers, body: args.body });
   }
   if (name === "ask_card") {
     if (!args.name || !args.secret || !Array.isArray(args.allowed_hosts) || !args.allowed_hosts.length)
@@ -326,7 +318,8 @@ async function callTool(name, args, env, principal) {
       wake: { repo: String(args.repo), pr: Number(args.pr) }, // on approval the wallet wakes you here
       created: new Date().toISOString(),
     };
-    await env.VAULT.put(K(space, "card", id), JSON.stringify(card));
+    await cardOp(env, space, id, "init", { card });
+    await registerCard(env, space, id);
     await logEvent(env, space, "card.request", { id, name: card.name, secret: card.secret, allowed_hosts: card.allowed_hosts, limit: card.limit, wake: card.wake });
     await notifyCardRequest(env, space, card);
     return { ok: true, pending: true, card: id, note: "Asked — it's pending. The owner gets a push to approve or deny; you can't use it until they do. On approval the wallet posts a wake-back to " + card.wake.repo + " PR #" + card.wake.pr + " to resume you — make sure you're watching that PR." };
