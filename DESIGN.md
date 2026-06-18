@@ -71,14 +71,15 @@ never holds a key. Same cryptographic gate, different screen.
 
 ## 5. Two-tier secrets — you choose, per secret
 
-- **Autonomous** — the host can settle it for your agents while you're away (per-space DEK under
-  the master KEK). Convenient, headless, **custodial** (host can decrypt).
-- **Sovereign** — sealed to your passkey via WebAuthn **PRF**. **Host-blind** — opens *only*
-  under your live tap. **No autonomous use.** Maximum sovereignty.
-- Honest custody truth: **hosted = you trust the operator** (the KEK unwraps autonomous
-  secrets). **Sovereign self-host = you are the operator.** Sovereign-tier secrets are
-  host-blind regardless of who runs it. A wallet whose autonomous job is to charge a card while
-  you sleep *must* be able to decrypt while you sleep — that's physics, not a gap.
+- **Autonomous** — your lockbox can settle it for your agents while you're away (per-space DEK
+  under the master KEK, which lives in *your* lockbox). Convenient, headless — the lockbox can
+  decrypt because that's its job, and the lockbox is yours.
+- **Sovereign** — sealed to your passkey via WebAuthn **PRF**. Opens *only* under your live tap.
+  **No autonomous use.** Maximum sovereignty.
+- Honest custody truth: the `MASTER_KEY` lives only in *your* lockbox, on *your* Cloudflare. The
+  control plane holds only ciphertext and can never decrypt. A lockbox whose autonomous job is to
+  charge a card while you sleep *must* be able to decrypt while you sleep — that's physics, not a
+  gap — but it is your worker doing it, on your infrastructure, not the operator's.
 
 ## 6. Key authority — generate freely, authorize as the owner
 
@@ -112,41 +113,41 @@ never holds a key. Same cryptographic gate, different screen.
   (approval, request, event, secret). Enforced by the GitHub App **installation boundary**: the
   token can only write where the user installed it, which is never the public template.
 
-## 9. Public code, private vaults
+## 9. Public code, private lockboxes
 
 - The wallet code is **public** (auditable, forkable). **Keys never live in any repo** — public,
-  private, fork, or duplicate. They live in each deployment's **Cloudflare** (KV + Worker
-  secrets).
-- Each user either **runs their own deploy** (their keys, their Cloudflare — full sovereignty)
-  or is a **tenant on a hosted instance** (the custodial trade, eyes open).
+  private, fork, or duplicate. They live in each customer's **own lockbox** on their **Cloudflare**
+  (KV + Worker secrets).
+- Every customer runs their own lockbox: their keys, their Cloudflare. The hosted control plane
+  manages spaces, cards, approvals, billing, and the statement — and holds **only ciphertext**. It
+  never holds or touches a plaintext key.
 
-## 10. Split deploy — the last mile on your own infra (the managed-without-custody answer)
+## 10. The lockbox — the only thing that touches keys
 
-The custody truth in §5/§9 says "hosted = you trust the operator, because the operator's worker
-holds the KEK and decrypts your autonomous secrets." A **split deploy** removes that trust from
-the *managed* path by separating the **last mile** (decrypt + inject + fetch) into its own worker
-that runs on **your** Cloudflare and holds **your** `MASTER_KEY`.
+There is one architecture, not a menu. The control plane never holds the `MASTER_KEY`; every
+customer's keys live in their **own lockbox** worker, on their **own** Cloudflare. The lockbox is
+the only thing that seals, opens, and injects keys.
 
-- **Control plane** (`src/worker.js` with `LAST_MILE_URL` + `LAST_MILE_KEY` set) — the managed
-  service. Holds **only ciphertext**: sealed secrets, KEK-wrapped DEKs, cards, the statement. It
-  has **no `MASTER_KEY`**, so it **cannot decrypt anything**. On a charge it relays the sealed
-  secret to the last-mile worker and returns the response. It runs the wallet, approvals, audit —
-  the whole UI/orchestration — while being **plaintext-blind**.
-- **Last-mile worker** (`src/last-mile.js`) — thin, **stateless**, on *your* account. Holds
-  `MASTER_KEY`. One job: open a sealed secret, inject it into one outbound call (credential header
-  **last**, **SSRF-blocked**), return the response. No cards, no storage, no UI. The plaintext key
-  exists only here, only for the duration of one fetch, only on your infrastructure.
+- **Control plane** (`src/worker.js`) — the wallet. Holds **only ciphertext**: sealed secrets,
+  KEK-wrapped DEKs, cards, the statement. It has **no `MASTER_KEY`**, so it **cannot decrypt
+  anything**. On a charge it relays the sealed secret to the customer's lockbox and returns the
+  response. It runs the wallet, approvals, billing, audit — the whole UI/orchestration — while
+  being **plaintext-blind**.
+- **Lockbox worker** — thin, **stateless**, on the customer's own account. Holds `MASTER_KEY`. One
+  job: open a sealed secret, inject it into one outbound call (credential header **last**,
+  **SSRF-blocked**), return the response. No cards, no statement, no UI. The plaintext key exists
+  only here, only for the duration of one fetch, only on the customer's infrastructure.
 - **The envelope is identical** on both sides (AES-256-GCM, per-space DEK wrapped under the KEK),
-  so seal/charge/rotate are cross-compatible. The control plane delegates `/secrets` (seal),
-  `/use` (charge), and `/rotate` (re-seal) to the last mile; **drop its `MASTER_KEY` entirely**
-  once `LAST_MILE_URL`/`LAST_MILE_KEY` are set.
-- **Unset = single-worker self-host**, decrypt inline — the original behaviour, unchanged. The
-  split is purely additive; nothing existing regresses.
+  so seal/charge/rotate line up. The control plane delegates `/secrets` (seal), `/use` (charge),
+  and `/rotate` (re-seal) to the customer's lockbox. The control plane never carries a `MASTER_KEY`.
+- **If a space has no lockbox connected**, the wallet cannot store or charge keys — it declines and
+  tells the customer to connect their lockbox. There is no path where the control plane handles a
+  plaintext key itself; a wallet that ever decrypted on its own box would be the broken state, not
+  a feature.
 
-This is the offering: **fork-and-self-host** (one worker, you operate it) OR **managed control
-plane + your own last-mile worker** (we run the wallet, your keys never leave your Cloudflare).
 Cryptographic, not pinky-promise: no `MASTER_KEY` on the operator's box → no plaintext on the
-operator's box.
+operator's box. The customer's keys live in the customer's lockbox; the operator runs the wallet
+and holds only ciphertext.
 
 ---
 
@@ -167,7 +168,7 @@ operator's box.
    are step-up-gated owner acts. Tested (`test/agents.test.mjs`).
 6. Two-tier secrets — autonomous (DEK) vs sovereign (passkey-PRF, host-blind)
 7. **SSRF + header-injection hardening on `/use`** — ✅ control-plane `/use` now SSRF-blocks
-   private/loopback/link-local/metadata before any charge (single-worker + split paths);
+   private/loopback/link-local/metadata before any charge (and the lockbox re-checks too);
    credential header injected last. Tested (`test/ssrf.test.mjs`). Soft-cap under KV concurrency
    still noted (a hard cap needs a Durable Object).
 8. Approval + wake to the user's own repo (never the public one)
@@ -179,4 +180,4 @@ operator's box.
    Core holds no keys (glass, not authority). `CORE_ORIGIN` widens `frame-ancestors` so the Core
    may frame it; the Core's iframe needs `allow="publickey-credentials-get"` for the approval tap.
    Tested (`test/app.test.mjs`). Still ahead: the actual Core-side tile that mounts the iframe.
-10. ~~Split deploy — last-mile worker (decrypt+inject on the owner's infra); control plane plaintext-blind~~ ✅
+10. ~~Lockbox worker (decrypt+inject on the customer's own infra); control plane plaintext-blind~~ ✅

@@ -388,14 +388,13 @@ export async function runLifecycle(env) {
   return { ran: true, spaces: spaces.length, lapsed, reminded, purged, purgeDue, restored, purgeArmed };
 }
 
-// ── SPLIT DEPLOY: the last mile (decrypt + inject + fetch) can be delegated to a separate
-// worker on the OWNER's own Cloudflare. When LAST_MILE_URL + LAST_MILE_KEY are set, THIS worker
-// (the control plane) holds only ciphertext and never touches MASTER_KEY — it relays sealed
-// material to the last-mile worker, which opens it on the owner's infra. Unset = single-worker
-// self-host (decrypt inline, the original behaviour). See src/last-mile.js. ──
-// Per-space last-mile: a tenant points the control plane at THEIR OWN last-mile worker (on their
+// ── THE LOCKBOX: sealing, opening, injecting, and fetching all happen in the customer's OWN
+// lockbox worker, on the customer's OWN Cloudflare. THIS worker (the control plane) holds only
+// ciphertext and never touches MASTER_KEY — it relays sealed material to the customer's lockbox,
+// which opens it on the customer's infra. See the lockbox worker (last-mile/). ──
+// Per-space lockbox: each customer points the control plane at THEIR OWN lockbox worker (on their
 // Cloudflare). We store only the URL + the relay token needed to reach it — never a customer's API
-// key. A global LAST_MILE_URL/KEY still works for single-tenant / self-host (the fallback).
+// key. A global LAST_MILE_URL/KEY remains only as a single-deployment fallback.
 export async function lastMileConfig(env, space) {
   if (space) {
     const raw = await env.VAULT.get(K(space, "lastmile", "config"));
@@ -409,16 +408,16 @@ export async function splitMode(env, space) {
 }
 async function callLastMile(env, space, path, payload) {
   const cfg = await lastMileConfig(env, space);
-  if (!cfg) throw new Error("no last-mile configured for this space");
+  if (!cfg) throw new Error("no lockbox configured for this space");
   const resp = await fetch(cfg.url.replace(/\/+$/, "") + path, {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: "Bearer " + cfg.key },
     body: JSON.stringify(payload),
   });
-  if (!resp.ok) throw new Error("last-mile " + path + " failed: " + resp.status);
+  if (!resp.ok) throw new Error("lockbox " + path + " failed: " + resp.status);
   return resp.json();
 }
-// the space's active KEK-wrapped DEK ({iv, ct}) to hand the last-mile worker, or null pre-rotation.
+// the space's active KEK-wrapped DEK ({iv, ct}) to hand the lockbox worker, or null pre-rotation.
 async function activeWrappedDEK(env, space) {
   const ref = await env.VAULT.get(K(space, "dek", "active"));
   if (!ref) return null;
@@ -482,7 +481,7 @@ async function wakeRequester(env, space, card) {
 // ── SSRF guard: refuse private / loopback / link-local / cloud-metadata targets. The card's
 // allowed_hosts is the merchant allowlist; this is the second, network-layer fence, enforced at
 // the control plane BEFORE a charge so a misconfigured card can never point the key at an internal
-// address. (The last-mile worker re-checks this too — belt and suspenders.) ──
+// address. (The lockbox worker re-checks this too — belt and suspenders.) ──
 export function ssrfBlocked(host) {
   let h = host.toLowerCase().replace(/^\[|\]$/g, ""); // strip IPv6 brackets
   const mapped = h.match(/^::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/); // IPv4-mapped IPv6 → test the embedded v4
@@ -569,7 +568,7 @@ export async function chargeCard(env, space, id, req) {
 
 export default {
   async fetch(request, env) {
-    // Crypto must be available (MASTER_KEY, or a delegated last mile in split mode), and at least
+    // Crypto must be reachable (a connected lockbox, or a MASTER_KEY on this worker), and at least
     // one way to authenticate: the self-host owner token (FORT_KEY) and/or GitHub-App OAuth login
     // (the SaaS path). A pure self-host sets FORT_KEY; a managed instance configures OAuth.
     const cryptoReady = env.MASTER_KEY || (env.LAST_MILE_URL && env.LAST_MILE_KEY) || oauthConfigured(env);
@@ -722,7 +721,7 @@ export default {
       const lurl = h.origin + h.pathname.replace(/\/+$/, "");
       await env.VAULT.put(K(ps, "lastmile", "pending"), JSON.stringify({ url: lurl, key: String(b.relay_token), requested: new Date().toISOString() }));
       await logEvent(env, ps, "lastmile.phone_home", { url: lurl }); // url only — never the relay token
-      await pushToOwner(env, ps, { title: "Vault waiting to connect", body: lurl + " phoned home. Tap to approve.", url: "/app" });
+      await pushToOwner(env, ps, { title: "Lockbox waiting to connect", body: lurl + " phoned home. Tap to approve.", url: "/app" });
       return json({ ok: true, pending: true });
     }
 
@@ -921,20 +920,20 @@ export default {
       if (!body.name) return json({ error: "name required" }, 400);
       let sealed;
       if (await splitMode(env, space)) {
-        // NON-CUSTODIAL: the control plane must NEVER receive a plaintext key in split mode. The
-        // browser seals at the tenant's own last-mile (via /lastmile/seal-ticket) and posts back
-        // ONLY ciphertext. Reject any plaintext value outright.
-        if (body.value != null) return json({ error: "this space is split (non-custodial): seal the value at your last-mile and POST { name, sealed }, never a plaintext value" }, 400);
+        // The control plane must NEVER receive a plaintext key. The browser seals at the customer's
+        // own lockbox (via /lastmile/seal-ticket) and posts back ONLY ciphertext. Reject any
+        // plaintext value outright.
+        if (body.value != null) return json({ error: "seal the value at your lockbox and POST { name, sealed }, never a plaintext value" }, 400);
         if (!body.sealed || typeof body.sealed !== "object" || typeof body.sealed.ct !== "string" || typeof body.sealed.iv !== "string") {
-          return json({ error: "sealed ciphertext { iv, ct } required — seal it at your last-mile first" }, 400);
+          return json({ error: "sealed ciphertext { iv, ct } required — seal it at your lockbox first" }, 400);
         }
         const ref = await env.VAULT.get(K(space, "dek", "active"));
         sealed = { iv: body.sealed.iv, ct: body.sealed.ct };
         if (ref) sealed.keyRef = ref; // tag with the DEK that opens it
       } else {
-        // No last-mile and no inline MASTER_KEY (a hosted tenant who hasn't connected their vault):
-        // there's nowhere non-custodial to seal a key. Tell them to connect first.
-        if (!env.MASTER_KEY) return json({ error: "connect your last-mile vault first (Vault → Connect my vault) — there's nowhere to seal a key yet" }, 409);
+        // No lockbox connected and no MASTER_KEY on this worker: there's nowhere to seal a key.
+        // Tell the customer to connect their lockbox first.
+        if (!env.MASTER_KEY) return json({ error: "connect your lockbox first (Lockbox → Connect) — there's nowhere to seal a key yet" }, 409);
         if (!body.value) return json({ error: "name and value required" }, 400);
         sealed = await encrypt(env, space, String(body.value));
       }
@@ -953,8 +952,8 @@ export default {
       if (s) return s;
       let res;
       if (await splitMode(env, space)) {
-        // gather every sealed secret + the current active wrapped DEK, hand them to the last-mile
-        // worker to re-seal under a fresh DEK, then persist what comes back. Plaintext stays there.
+        // gather every sealed secret + the current active wrapped DEK, hand them to the customer's
+        // lockbox to re-seal under a fresh DEK, then persist what comes back. Plaintext stays there.
         const secrets = [];
         let cursor;
         const prefix = K(space, "secret", "");
@@ -978,48 +977,48 @@ export default {
       return json({ ok: true, ...res });
     }
 
-    // ── connect THIS space to its OWN last-mile worker (the tenant's sovereign vault on their
-    // Cloudflare). Owner-gated. We store only the URL + relay token to reach it — never a customer
-    // key. Once connected, the space is split-routed and the control plane holds only ciphertext. ──
+    // ── connect THIS space to its OWN lockbox worker (on the customer's Cloudflare). Owner-gated.
+    // We store only the URL + relay token to reach it — never a customer key. Once connected, the
+    // space is routed to that lockbox and the control plane holds only ciphertext. ──
     if (path === "/lastmile/connect" && request.method === "POST") {
       if (!human) return json({ error: HUMAN_REQUIRED }, 403);
       { const g = requireSub(); if (g) return g; }
       const s = await stepIfSession("lastmile.connect");
       if (s) return s;
       let h;
-      try { h = new URL(String(body.url || "")); } catch { return json({ error: "enter your last-mile worker's https URL" }, 400); }
-      if (h.protocol !== "https:") return json({ error: "last-mile url must be https" }, 400);
-      if (ssrfBlocked(h.host)) return json({ error: "last-mile host not allowed" }, 400);
+      try { h = new URL(String(body.url || "")); } catch { return json({ error: "enter your lockbox worker's https URL" }, 400); }
+      if (h.protocol !== "https:") return json({ error: "lockbox url must be https" }, 400);
+      if (ssrfBlocked(h.host)) return json({ error: "lockbox host not allowed" }, 400);
       const base = h.origin + h.pathname.replace(/\/+$/, "");
-      // Claim the relay token SERVER-TO-SERVER: the worker self-minted it and hands it out ONCE via
-      // /bootstrap. The control plane grabs it directly, so the customer (and their agent) never
-      // copies a token — they only paste the worker's URL. (First-call-wins: deploy, then connect.)
+      // Claim the relay token SERVER-TO-SERVER: the lockbox self-minted it and hands it out ONCE
+      // via /bootstrap. The control plane grabs it directly, so the customer (and their agent) never
+      // copies a token — they only paste the lockbox's URL. (First-call-wins: deploy, then connect.)
       let creds;
       try {
         const r = await fetch(base + "/bootstrap", { headers: { "User-Agent": "fort-card-control-plane" } });
         creds = await r.json().catch(() => ({}));
         if (!r.ok || !creds.last_mile_key) {
           const already = creds && creds.error && /already claimed/i.test(creds.error);
-          return json({ error: already ? "that worker's link was already claimed — deploy a fresh last-mile and connect again" : "couldn't claim the last-mile at that URL (" + r.status + ")" }, 400);
+          return json({ error: already ? "that lockbox's link was already claimed — deploy a fresh lockbox and connect again" : "couldn't claim the lockbox at that URL (" + r.status + ")" }, 400);
         }
       } catch {
-        return json({ error: "couldn't reach that last-mile URL — check it's deployed and correct" }, 400);
+        return json({ error: "couldn't reach that lockbox URL — check it's deployed and correct" }, 400);
       }
       const url = String(creds.last_mile_url || base).replace(/\/+$/, "");
       await env.VAULT.put(K(space, "lastmile", "config"), JSON.stringify({ url, key: String(creds.last_mile_key) }));
       await logEvent(env, space, "lastmile.connect", { url }); // url only — never the token
       return json({ ok: true, connected: true, url });
     }
-    // Mint a one-shot, short-TTL ticket so the tenant's BROWSER can seal a value at their own
-    // last-mile directly — the control plane never receives the plaintext. Owner-gated. Returns the
-    // last-mile URL + the active wrapped DEK (ciphertext, safe to expose) for the browser to use.
+    // Mint a one-shot, short-TTL ticket so the customer's BROWSER can seal a value at their own
+    // lockbox directly — the control plane never receives the plaintext. Owner-gated. Returns the
+    // lockbox URL + the active wrapped DEK (ciphertext, safe to expose) for the browser to use.
     if (path === "/lastmile/seal-ticket" && request.method === "POST") {
       if (!human) return json({ error: HUMAN_REQUIRED }, 403);
       { const g = requireSub(); if (g) return g; }
       const s = await stepIfSession("lastmile.seal");
       if (s) return s;
       const cfg = await lastMileConfig(env, space);
-      if (!cfg) return json({ error: "no last-mile connected for this space — connect one first" }, 409);
+      if (!cfg) return json({ error: "no lockbox connected for this space — connect one first" }, 409);
       const ticket = await mintSealTicket(cfg.key);
       return json({ url: cfg.url, ticket, dek: await activeWrappedDEK(env, space) });
     }
@@ -1043,7 +1042,7 @@ export default {
       // wallet can show it as the second value to paste. (Public; safe to expose.)
       return json({ code, ttl_minutes: 30, control_plane_url: url.origin });
     }
-    // Approve a pending phone-home → promote it to the space's active last-mile config. Owner-gated,
+    // Approve a pending phone-home → promote it to the space's active lockbox config. Owner-gated,
     // passkey step — this is the gate that a leaked claim code can never pass.
     if (path === "/lastmile/pending/approve" && request.method === "POST") {
       if (!human) return json({ error: HUMAN_REQUIRED }, 403);
@@ -1051,7 +1050,7 @@ export default {
       const s = await stepIfSession("lastmile.approve");
       if (s) return s;
       const raw = await env.VAULT.get(K(space, "lastmile", "pending"));
-      if (!raw) return json({ error: "no vault is waiting to connect" }, 409);
+      if (!raw) return json({ error: "no lockbox is waiting to connect" }, 409);
       const p = JSON.parse(raw);
       await env.VAULT.put(K(space, "lastmile", "config"), JSON.stringify({ url: p.url, key: p.key }));
       await env.VAULT.delete(K(space, "lastmile", "pending"));

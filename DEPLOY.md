@@ -29,11 +29,14 @@ Note its **Client ID** (`Iv23…`); set the callback to `https://<your-domain>/c
 
 ## 4. Run it
 
-Actions → **deploy** → Run workflow. First run creates the worker, binds the domain, and mints
-`MASTER_KEY`. Done.
+Actions → **deploy** → Run workflow. First run creates the worker and binds the domain. This is the
+**control plane** — the wallet that manages spaces, cards, approvals, billing, and the statement. It
+holds only ciphertext: it never seals, opens, or injects a customer's plaintext key. That work lives
+only in each customer's lockbox.
 
 ## After that
 
 Open `https://<your-domain>/app`, sign in with GitHub, add a passkey. Every client does the same —
-zero deploy. Sovereignty option: a tenant who wants host-blind keys runs their own last-mile worker
-(`worker/src/last-mile.js`); see DESIGN §10.
+zero deploy. Then each customer connects their own **lockbox** — a worker on their own Cloudflare
+that holds their `MASTER_KEY` and is the only thing that seals, opens, and injects their keys. Until
+a space connects its lockbox, the wallet can't store or charge keys for it; see DESIGN §10.

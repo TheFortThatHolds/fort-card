@@ -42,7 +42,7 @@ export function oauthConfigured(env) {
 
 // ── the cookie signing key. A Worker secret wins (bring-your-own); else self-mint one into the
 // VAULT KV and reuse it forever — the operator never types a session key, same posture as the
-// last-mile worker's self-minting root. Constant per deployment, so cookies verify across requests.
+// lockbox worker's self-minting root. Constant per deployment, so cookies verify across requests.
 async function signingKey(env) {
   let raw = env.SESSION_SECRET;
   if (!raw) {
