@@ -41,3 +41,5 @@ jobs:
         run: node test/ticket.test.mjs
       - name: Claim codes
         run: node test/claim.test.mjs
+      - name: Connect Cloudflare (OAuth + provisioning)
+        run: node test/cloudflare.test.mjs

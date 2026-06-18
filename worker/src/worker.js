@@ -60,6 +60,7 @@ import { resolveAgentBearer, mintAgentBearer, listAgents, revokeAgent } from "./
 import { handleApp } from "./app.js";
 import { mintSealTicket } from "./ticket.js";
 import { mintClaimCode, verifyAndConsumeClaim } from "./claim.js";
+import * as cf from "./cloudflare.js";
 import { pushToOwner, addSubscription, removeSubscription, vapidPublicKey, listSubscriptions } from "./push.js";
 import { postComment, appConfigured, getInstallationOwner } from "./github-app.js";
 import { isSubscribed, createCheckout, confirmCheckout, priceCents, billingSummary, cancelSubscription, resumeSubscription } from "./stripe.js";
@@ -827,6 +828,73 @@ export default {
       await env.VAULT.delete(K(space, "lastmile", "pending"));
       await logEvent(env, space, "lastmile.pending_reject", {});
       return json({ ok: true });
+    }
+    // ── CONNECT CLOUDFLARE (one-tap) — start: PKCE + redirect the owner to Cloudflare's consent.
+    // Owner-gated (human + subscribed). No passkey step: this only STARTS consent — the sensitive
+    // write happens in the callback, and it's a top-level browser navigation, not an API call. ──
+    if (path === "/cloudflare/connect" && request.method === "GET") {
+      if (!human) return json({ error: HUMAN_REQUIRED }, 403);
+      { const g = requireSub(); if (g) return g; }
+      if (!env.CF_OAUTH_CLIENT_ID) return json({ error: "Cloudflare connect isn't configured yet (CF_OAUTH_CLIENT_ID unset)" }, 503);
+      const { authorization_endpoint } = await cf.discover(env);
+      const { verifier, challenge } = await cf.generatePkce();
+      const state = crypto.randomUUID().replace(/-/g, "") + crypto.randomUUID().replace(/-/g, "");
+      await env.VAULT.put("cfstate:" + state, JSON.stringify({ space, verifier, exp: Date.now() + 600000 }), { expirationTtl: 600 });
+      const authorizeUrl = cf.buildAuthorizeUrl({
+        authorization_endpoint,
+        clientId: env.CF_OAUTH_CLIENT_ID,
+        redirectUri: url.origin + "/cloudflare/callback",
+        scope: env.CF_OAUTH_SCOPES || "",
+        state, challenge,
+      });
+      return Response.redirect(authorizeUrl, 302);
+    }
+    // ── CONNECT CLOUDFLARE — finish: exchange the code, then drive Cloudflare's API to create the
+    // KV + deploy the lockbox into the customer's own account, claim its relay token, store config.
+    // The `state` (unguessable, space-bound, one-time) is the CSRF + space binding. ──
+    if (path === "/cloudflare/callback" && request.method === "GET") {
+      const back = (q) => Response.redirect(url.origin + "/app?" + q, 302);
+      const state = url.searchParams.get("state") || "";
+      const code = url.searchParams.get("code") || "";
+      if (url.searchParams.get("error")) return back("cloudflare=error&reason=" + encodeURIComponent(url.searchParams.get("error")));
+      const raw = state ? await env.VAULT.get("cfstate:" + state) : null;
+      if (!raw) return back("cloudflare=error&reason=bad_state");
+      await env.VAULT.delete("cfstate:" + state); // one-time
+      const st = JSON.parse(raw);
+      if (!code || st.exp < Date.now()) return back("cloudflare=error&reason=expired");
+      const ps = st.space;
+      try {
+        const { token_endpoint } = await cf.discover(env);
+        const tok = await cf.exchangeCode({
+          token_endpoint, clientId: env.CF_OAUTH_CLIENT_ID,
+          redirectUri: url.origin + "/cloudflare/callback", code, verifier: st.verifier,
+        });
+        const accountId = await cf.firstAccountId(tok.access_token);
+        const source = await cf.fetchLockboxSource(env);
+        const scriptName = "fort-card-lockbox";
+        const kvId = await cf.createKvNamespace(tok.access_token, accountId, scriptName);
+        await cf.uploadLockbox(tok.access_token, accountId, scriptName, source, kvId);
+        const lockboxUrl = await cf.enableWorkersDev(tok.access_token, accountId, scriptName);
+        // Claim the relay token from the lockbox we just deployed (server-to-server /bootstrap),
+        // retrying briefly while the new worker propagates. We never hold its MASTER_KEY.
+        let key = null;
+        for (let i = 0; i < 6 && !key; i++) {
+          try {
+            const r = await fetch(lockboxUrl + "/bootstrap", { headers: { "User-Agent": "fort-card-control-plane" } });
+            const c = await r.json().catch(() => ({}));
+            if (r.ok && c.last_mile_key) key = String(c.last_mile_key);
+          } catch {}
+          if (!key) await new Promise((res) => setTimeout(res, 1500));
+        }
+        if (!key) throw new Error("deployed the lockbox but couldn't claim its connection yet — open the wallet and retry connect");
+        await env.VAULT.put(K(ps, "lastmile", "config"), JSON.stringify({ url: lockboxUrl, key }));
+        await env.VAULT.delete(K(ps, "lastmile", "pending"));
+        await logEvent(env, ps, "lastmile.connect", { url: lockboxUrl, via: "cloudflare-oauth" }); // url only
+        return back("cloudflare=connected");
+      } catch (e) {
+        await logEvent(env, ps, "lastmile.cloudflare_error", { error: (e && e.message) || "failed" });
+        return back("cloudflare=error&reason=" + encodeURIComponent((e && e.message) || "failed"));
+      }
     }
     if (path === "/lastmile/disconnect" && request.method === "POST") {
       if (!human) return json({ error: HUMAN_REQUIRED }, 403);

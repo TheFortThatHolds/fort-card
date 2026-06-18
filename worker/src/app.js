@@ -191,21 +191,23 @@ label{font-size:13px;color:#cdc2af;display:block;margin-top:10px}
           <button class="btn" id="lmrejectbtn" style="margin-top:8px">Reject</button>
         </div>
         <div id="lmconnect" class="hide">
-          <div class="muted" style="margin-bottom:6px"><b>1.</b> Set up your vault — get a one-time setup code:</div>
-          <button class="btn p" id="lmsetupbtn">Set up your vault</button>
-          <div id="lmclaim" class="hide" style="margin-top:10px">
-            <div class="muted" style="margin-bottom:6px"><b>2.</b> Deploy your lockbox and paste these two on Cloudflare's deploy screen:</div>
-            <div class="muted" style="margin:4px 0">Setup code: <b id="lmclaimcode" style="font-family:monospace;letter-spacing:1px"></b></div>
-            <div class="muted" style="margin:4px 0;word-break:break-all">Control plane: <b id="lmclaimcp"></b></div>
-            <a class="btn" href="https://deploy.workers.cloudflare.com/?url=https://github.com/TheFortThatHolds/fort-card-lockbox" target="_blank" rel="noopener" style="margin-top:8px">⚡ Deploy to Cloudflare</a>
-            <div class="muted" style="margin-top:8px">Your lockbox phones home with the code — it'll appear above for you to approve. The code expires in ~30 min, so deploy now.</div>
-          </div>
+          <div class="muted" style="margin-bottom:6px">Connect your vault in one tap — we set it up on your own Cloudflare for you:</div>
+          <button class="btn p" id="lmcfbtn">⚡ Connect Cloudflare</button>
+          <div class="muted" style="margin-top:8px">You approve once on Cloudflare. We create the vault in <em>your</em> account — nothing to copy, nothing to paste.</div>
           <details style="margin-top:14px">
-            <summary class="muted" style="cursor:pointer">Prefer to paste the URL yourself?</summary>
-            <div class="muted" style="margin:6px 0"><b>1.</b> Deploy your lockbox, then <b>2.</b> paste the worker URL it gives you:</div>
+            <summary class="muted" style="cursor:pointer">Other ways to connect</summary>
+            <div class="muted" style="margin:10px 0 6px"><b>Setup code:</b> deploy it yourself, type one code:</div>
+            <button class="btn" id="lmsetupbtn">Get a setup code</button>
+            <div id="lmclaim" class="hide" style="margin-top:10px">
+              <div class="muted" style="margin:4px 0">Setup code: <b id="lmclaimcode" style="font-family:monospace;letter-spacing:1px"></b></div>
+              <div class="muted" style="margin:4px 0;word-break:break-all">Control plane: <b id="lmclaimcp"></b></div>
+              <a class="btn" href="https://deploy.workers.cloudflare.com/?url=https://github.com/TheFortThatHolds/fort-card-lockbox" target="_blank" rel="noopener" style="margin-top:8px">⚡ Deploy to Cloudflare</a>
+              <div class="muted" style="margin-top:8px">Paste both on Cloudflare's deploy screen. The lockbox phones home and appears above to approve. Code expires in ~30 min.</div>
+            </div>
+            <div class="muted" style="margin:16px 0 6px"><b>Paste the URL:</b> deploy, then paste the worker URL:</div>
             <a class="btn" href="https://deploy.workers.cloudflare.com/?url=https://github.com/TheFortThatHolds/fort-card-lockbox" target="_blank" rel="noopener">⚡ Deploy to Cloudflare</a>
             <label style="margin-top:14px">Worker URL<input id="lm_url" placeholder="https://fort-card-last-mile.you.workers.dev"></label>
-            <button class="btn p" id="lmconnectbtn" style="margin-top:12px">Connect my vault (tap to confirm)</button>
+            <button class="btn" id="lmconnectbtn" style="margin-top:12px">Connect my vault (tap to confirm)</button>
             <div class="muted" style="margin-top:8px">We claim the link for you — no tokens to copy. Your key seals inside <em>your</em> worker; we only ever hold ciphertext.</div>
           </details>
         </div>
@@ -464,6 +466,13 @@ $('#lmsetupbtn')&&($('#lmsetupbtn').onclick=()=>{act(async()=>{const r=await jge
 // Approve a vault that phoned home — the passkey tap is the real gate. Promotes pending → connected.
 $('#lmapprovebtn')&&($('#lmapprovebtn').onclick=()=>act(async()=>{await passkeyAssert();await jget('/lastmile/pending/approve',{method:'POST'});await refreshLastmile()},'Vault connected ✓'));
 $('#lmrejectbtn')&&($('#lmrejectbtn').onclick=()=>act(async()=>{await jget('/lastmile/pending/reject',{method:'POST'});await refreshLastmile()},'Pending vault rejected'));
+// Connect Cloudflare (one-tap): top-level navigation to the OAuth start (carries the session cookie).
+$('#lmcfbtn')&&($('#lmcfbtn').onclick=()=>{location.href='/cloudflare/connect'});
+// Returning from the Cloudflare round-trip: surface the outcome and refresh, then clean the URL.
+(function(){const p=new URLSearchParams(location.search).get('cloudflare');if(!p)return;
+  if(p==='connected')toast('Cloudflare vault connected ✓');
+  else toast('Cloudflare connect failed: '+(new URLSearchParams(location.search).get('reason')||'try again'));
+  history.replaceState({},'','/app');showView('vault');refreshLastmile()})();
 document.querySelectorAll('[data-back]').forEach(b=>b.onclick=()=>showView('home'));
 
 // ── the log: a human-readable type plus the detail the ledger already records ──
