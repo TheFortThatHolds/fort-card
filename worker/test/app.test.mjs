@@ -11,6 +11,11 @@ ok(html.includes("/login") && html.includes("/whoami"), "wires the OAuth login +
 ok(html.includes('id="gate"') && html.includes('id="subbtn"'), "renders the subscribe gate");
 ok(html.includes("/billing/status") && html.includes("/billing/subscribe") && html.includes("/billing/confirm"), "wires the billing status/subscribe/confirm flow");
 
+// the log loads only the last 10 (fast), with a one-tap full export
+ok(html.includes("/events?limit=10"), "log loads only the last 10 events");
+ok(html.includes('href="/events/export"') && html.includes("download"), "log offers a one-click full export download");
+ok(html.includes("Promise.all(["), "load() fans its sections out concurrently");
+
 // the inline browser script must be syntactically valid (parse, don't execute)
 const script = html.match(/<script>([\s\S]*?)<\/script>/)[1];
 let parsed = true;

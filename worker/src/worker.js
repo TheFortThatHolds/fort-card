@@ -32,6 +32,7 @@
 //   POST   /cards              {name, secret, allowed_hosts, ...}  issue (owner) / request (agent)
 //   GET    /cards                                                  list cards (never the key)
 //   GET    /events             ?limit=N                            the statement (audit ledger)
+//   GET    /events/export                                          download the FULL ledger (file)
 //   POST   /cards/:id/use      {url, method?, headers?, body?}     charge: authorize + settle
 //   POST   /cards/:id/freeze   {frozen}                            freeze (any) / unfreeze (owner)
 //   DELETE /cards/:id                                              revoke
@@ -956,7 +957,13 @@ export default {
       const list = await env.VAULT.list({ prefix: K(space, "card", "") });
       const cards = [];
       for (const k of list.keys) {
-        const c = JSON.parse(await env.VAULT.get(k.name));
+        // KV is eventually consistent: right after a revoke, list() can still return the deleted
+        // key while get() already returns null. Skip those (and any unparseable entry) instead of
+        // letting JSON.parse(null) throw and 500 the whole list — that was the post-revoke flakiness.
+        const raw = await env.VAULT.get(k.name);
+        if (!raw) continue;
+        let c;
+        try { c = JSON.parse(raw); } catch { continue; }
         cards.push({
           id: c.id, name: c.name, secret: c.secret, holder: c.holder ?? null, allowed_hosts: c.allowed_hosts,
           limit: c.limit, used: c.used, remaining: c.limit != null ? Math.max(0, c.limit - c.used) : null,
@@ -977,6 +984,27 @@ export default {
         if (raw) events.push(JSON.parse(raw));
       }
       return json({ events });
+    }
+
+    // ── export the WHOLE statement as a downloadable file (it's the owner's data — one tap, no
+    // friction). The UI only ever loads the last few events for speed; this is the full ledger,
+    // paged through with the cursor so it's complete regardless of size. ──
+    if (path === "/events/export" && request.method === "GET") {
+      const events = [];
+      let cursor;
+      do {
+        const page = await env.VAULT.list({ prefix: K(space, "event", ""), cursor });
+        for (const k of page.keys) {
+          const raw = await env.VAULT.get(k.name);
+          if (raw) { try { events.push(JSON.parse(raw)); } catch {} }
+        }
+        cursor = page.list_complete ? undefined : page.cursor;
+      } while (cursor);
+      events.reverse(); // newest first
+      const fname = "fort-card-log-" + new Date().toISOString().slice(0, 10) + ".json";
+      return new Response(JSON.stringify({ space, exported_at: new Date().toISOString(), count: events.length, events }, null, 2), {
+        headers: { "Content-Type": "application/json", "Content-Disposition": 'attachment; filename="' + fname + '"' },
+      });
     }
 
     // ── /cards/:id  (use · freeze · revoke) ──

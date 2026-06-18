@@ -224,7 +224,8 @@ label{font-size:13px;color:#cdc2af;display:block;margin-top:10px}
     <div id="view-log" class="hide">
       <button class="btn sm back" data-back>← Back</button>
       <h2>Log — agent activity</h2>
-      <p class="muted" style="margin-bottom:14px">Every act in your space, newest first: requests, approvals, charges, declines, freezes, key rolls.</p>
+      <p class="muted" style="margin-bottom:14px">The last 10 acts in your space, newest first: requests, approvals, charges, declines, freezes, key rolls. Export pulls the full history.</p>
+      <a class="btn sm" id="logexport" href="/events/export" download style="display:inline-block;margin-bottom:14px">⬇ Export full log</a>
       <div id="events" class="card"><div class="muted">Loading…</div></div>
     </div>
   </div>
@@ -236,7 +237,10 @@ if(new URLSearchParams(location.search).get('embed'))document.body.classList.add
 const toast=(m)=>{const t=$('#toast');t.textContent=m;t.classList.add('show');setTimeout(()=>t.classList.remove('show'),2600)};
 const b2b=b=>btoa(String.fromCharCode(...new Uint8Array(b))).replace(/\\+/g,'-').replace(/\\//g,'_').replace(/=+$/,'');
 const s2b=s=>{s=s.replace(/-/g,'+').replace(/_/g,'/');return Uint8Array.from(atob(s+'='.repeat((4-s.length%4)%4)),c=>c.charCodeAt(0))};
-async function jget(p,o){const r=await api(p,o);let j={};try{j=await r.json()}catch{}if(!r.ok)throw new Error(j.error||('HTTP '+r.status));return j}
+// Idempotent GETs auto-retry on a transient 5xx / network blip (Cloudflare KV can be slow + flaky)
+// with a short backoff, so one hiccup doesn't surface as a dead "HTTP 500" section. 4xx never retries
+// (it's a real answer), and anything with a method (mutations) runs exactly once — never replayed.
+async function jget(p,o){const isGet=!o||!o.method||o.method==='GET';let last;for(let i=0,n=isGet?3:1;i<n;i++){if(i)await new Promise(r=>setTimeout(r,300*i));let r;try{r=await api(p,o)}catch(e){last=e;continue}let j={};try{j=await r.json()}catch{}if(r.ok)return j;last=new Error(j.error||('HTTP '+r.status));if(r.status<500)break}throw last}
 
 let me='',hasPk=false,__bill=null;
 function pkmsg(html){$('#pkstate').innerHTML=html}
@@ -293,23 +297,28 @@ function cardView(c,pending){
 }
 
 async function load(){
-  try{
-    const cards=(await jget('/cards')).cards||[];
-    const pend=cards.filter(c=>c.pending),live=cards.filter(c=>!c.pending);
-    const pe=$('#pending');pe.innerHTML='';if(!pend.length)pe.innerHTML='<div class="muted">None.</div>';else pend.forEach(c=>pe.append(cardView(c,true)));
-    const ce=$('#cards');ce.innerHTML='';if(!live.length)ce.innerHTML='<div class="muted">No cards yet.</div>';else live.forEach(c=>ce.append(cardView(c,false)));
-  }catch(e){$('#cards').innerHTML='<div class="muted">'+e.message+'</div>'}
-  try{
-    const pk=(await jget('/passkey/list')).passkeys||[];hasPk=pk.length>0;
-    $('#pkstate').innerHTML=hasPk?('<b style="color:#7fae6d">✓ '+pk.length+' passkey'+(pk.length>1?'s':'')+' on file</b>'):'<b style="color:#e7a85a">No passkey on this device — add one</b>';
-    $('#enroll').textContent=hasPk?'Add another':'Add passkey';
-  }catch(e){$('#pkstate').innerHTML='<b style="color:#e7857a">Couldn\\'t read passkeys: '+(e.message||'error')+'</b>'}
-  try{
-    const ss=(await jget('/secrets')).secrets||[];
-    const se=$('#secrets');se.innerHTML='';
-    if(!ss.length){se.innerHTML='<div class="muted">No secrets stored yet.</div>'}
-    else ss.forEach(n=>{const el=document.createElement('div');el.className='card';el.innerHTML='<div class="row"><div><b>'+n+'</b><div class="muted">stored · the key a card draws on</div></div><div class="btns"></div></div>';const b=mkbtn('Roll over');b.onclick=()=>rollover(n);el.querySelector('.btns').append(b);se.append(el)});
-  }catch(e){$('#secrets').innerHTML='<div class="muted">'+e.message+'</div>'}
+  // Run the independent sections concurrently — on a slow worker, four serial round-trips stack into
+  // a long wait (and a longer window to time out). Each still owns its own try/catch so one failing
+  // section degrades alone instead of taking the others down.
+  await Promise.all([
+    (async()=>{try{
+      const cards=(await jget('/cards')).cards||[];
+      const pend=cards.filter(c=>c.pending),live=cards.filter(c=>!c.pending);
+      const pe=$('#pending');pe.innerHTML='';if(!pend.length)pe.innerHTML='<div class="muted">None.</div>';else pend.forEach(c=>pe.append(cardView(c,true)));
+      const ce=$('#cards');ce.innerHTML='';if(!live.length)ce.innerHTML='<div class="muted">No cards yet.</div>';else live.forEach(c=>ce.append(cardView(c,false)));
+    }catch(e){$('#cards').innerHTML='<div class="muted">'+e.message+'</div>'}})(),
+    (async()=>{try{
+      const pk=(await jget('/passkey/list')).passkeys||[];hasPk=pk.length>0;
+      $('#pkstate').innerHTML=hasPk?('<b style="color:#7fae6d">✓ '+pk.length+' passkey'+(pk.length>1?'s':'')+' on file</b>'):'<b style="color:#e7a85a">No passkey on this device — add one</b>';
+      $('#enroll').textContent=hasPk?'Add another':'Add passkey';
+    }catch(e){$('#pkstate').innerHTML='<b style="color:#e7857a">Couldn\\'t read passkeys: '+(e.message||'error')+'</b>'}})(),
+    (async()=>{try{
+      const ss=(await jget('/secrets')).secrets||[];
+      const se=$('#secrets');se.innerHTML='';
+      if(!ss.length){se.innerHTML='<div class="muted">No secrets stored yet.</div>'}
+      else ss.forEach(n=>{const el=document.createElement('div');el.className='card';el.innerHTML='<div class="row"><div><b>'+n+'</b><div class="muted">stored · the key a card draws on</div></div><div class="btns"></div></div>';const b=mkbtn('Roll over');b.onclick=()=>rollover(n);el.querySelector('.btns').append(b);se.append(el)});
+    }catch(e){$('#secrets').innerHTML='<div class="muted">'+e.message+'</div>'}})(),
+  ]);
   refreshPushState();
 }
 // Store a key. In split (non-custodial) mode the plaintext goes browser → the tenant's OWN
@@ -480,7 +489,7 @@ const EVNAMES={'card.request':'Card requested','card.approve':'Card approved','c
 function evName(t){return EVNAMES[t]||String(t||'').replace(/[._]/g,' ').replace(/^./,c=>c.toUpperCase())}
 function evDetail(e){const d=[];if(e.name)d.push(e.name);if(e.host)d.push(e.host);if(e.status!=null)d.push('→ '+e.status);if(e.allowed_hosts&&e.allowed_hosts.length)d.push(e.allowed_hosts.join(', '));if(e.limit!=null)d.push('cap '+e.limit);if(e.repo)d.push(e.repo);if(e.reason)d.push(e.reason);if(e.id)d.push(e.id);return d.join(' · ')}
 function evTime(ts){return String(ts||'').replace('T',' ').slice(0,16)}
-async function loadEvents(){try{const ev=(await jget('/events?limit=200')).events||[];$('#events').innerHTML=ev.length?ev.map(e=>'<div class="ev"><div class="row"><span class="evtype">'+evName(e.type)+'</span><span class="muted">'+evTime(e.ts)+'</span></div>'+(evDetail(e)?'<div class="muted evd">'+evDetail(e)+'</div>':'')+'</div>').join(''):'<div class="muted">No activity yet.</div>'}catch(e){$('#events').innerHTML='<div class="muted">'+e.message+'</div>'}}
+async function loadEvents(){try{const ev=(await jget('/events?limit=10')).events||[];$('#events').innerHTML=ev.length?ev.map(e=>'<div class="ev"><div class="row"><span class="evtype">'+evName(e.type)+'</span><span class="muted">'+evTime(e.ts)+'</span></div>'+(evDetail(e)?'<div class="muted evd">'+evDetail(e)+'</div>':'')+'</div>').join(''):'<div class="muted">No activity yet.</div>'}catch(e){$('#events').innerHTML='<div class="muted">'+e.message+'</div>'}}
 
 (async()=>{
   let w;try{w=await jget('/whoami')}catch{$('#signin').classList.remove('hide');return regSW()}
