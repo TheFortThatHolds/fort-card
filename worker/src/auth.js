@@ -183,7 +183,12 @@ export async function handleAuth(request, env, url, path) {
   // GET /whoami → who's logged in + which space, for the PWA to render.
   if (path === "/whoami" && request.method === "GET") {
     const s = await resolveSession(request, env);
-    return s ? jsonResp({ login: s.login, space: s.space }) : jsonResp({ error: "not signed in" }, 401);
+    if (!s) return jsonResp({ error: "not signed in" }, 401);
+    // DEBUG (temporary): a per-KV-namespace fingerprint. Same store → same value on both the PWA and
+    // the agent's wallet_map; different values = the two are reading different KV stores.
+    let store = await env.VAULT.get("__store_fp");
+    if (!store) { store = crypto.randomUUID(); await env.VAULT.put("__store_fp", store); }
+    return jsonResp({ login: s.login, space: s.space, store });
   }
 
   return null;

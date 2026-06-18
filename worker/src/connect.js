@@ -291,8 +291,13 @@ async function callTool(name, args, env, principal) {
     const secPrefix = K(space, "secret", "");
     const secList = await env.VAULT.list({ prefix: secPrefix });
     const requestable_secrets = secList.keys.map((k) => k.name.slice(secPrefix.length));
+    // DEBUG (temporary): per-KV-namespace fingerprint, same key /whoami reads. If the agent's `store`
+    // here differs from the PWA's, the agent and the owner are reading different KV stores.
+    let store = await env.VAULT.get("__store_fp");
+    if (!store) { store = crypto.randomUUID(); await env.VAULT.put("__store_fp", store); }
     return {
       space,
+      store,
       usable_cards,
       requestable_secrets,
       pending_cards,
