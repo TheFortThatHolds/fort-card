@@ -14,6 +14,8 @@ name: deploy
 #   WALLET_DOMAIN          e.g. card.example.com  (callback/rpid/origin are derived from it)
 #   GH_APP_ID              the wake-back GitHub App's numeric id
 #   OPERATOR_SPACE         the billing space, e.g. github:<id>
+#   CF_OAUTH_CLIENT_ID     (optional) Connect Cloudflare one-tap onboarding — the Cloudflare OAuth
+#                          client id (non-secret, PKCE). Unset → onboarding falls back to claim-code.
 # Subscriptions turn on with NO key here: with OPERATOR_SPACE set, issue ONE Stripe card in that
 # space's wallet (allowed host api.stripe.com) and the worker bills by charging that card.
 
@@ -63,6 +65,7 @@ jobs:
           CLIENT_ID: ${{ vars.GH_CLIENT_ID }}
           APP_ID: ${{ vars.GH_APP_ID }}
           OP_SPACE: ${{ vars.OPERATOR_SPACE }}
+          CF_CLIENT_ID: ${{ vars.CF_OAUTH_CLIENT_ID }}
         run: |
           set -e
           missing=
@@ -90,6 +93,15 @@ jobs:
             echo "SUBSCRIPTION_CURRENCY = \"usd\""
             echo "SUBSCRIPTION_PRODUCT_NAME = \"Fort Card\""
           } >> wrangler.toml
+          # Optional: Connect Cloudflare one-tap onboarding. Non-secret (PKCE public client), so it's
+          # an Actions Variable, not a secret. If unset, the /cloudflare/connect route returns 503 and
+          # onboarding falls back to claim-code / paste-URL — the deploy is never blocked on it.
+          if [ -n "$CF_CLIENT_ID" ]; then
+            echo "CF_OAUTH_CLIENT_ID = \"$CF_CLIENT_ID\"" >> wrangler.toml
+            echo "Connect Cloudflare enabled (CF_OAUTH_CLIENT_ID set)."
+          else
+            echo "CF_OAUTH_CLIENT_ID not set — Connect Cloudflare onboarding stays off (claim-code/paste-URL still work)."
+          fi
           echo "Operator instance config injected for $DOMAIN."
 
       - name: Deploy
