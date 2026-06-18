@@ -848,7 +848,7 @@ export default {
           authorization_endpoint,
           clientId: env.CF_OAUTH_CLIENT_ID,
           redirectUri: url.origin + "/cloudflare/callback",
-          scope: env.CF_OAUTH_SCOPES || "",
+          scope: env.CF_OAUTH_SCOPES || cf.DEFAULT_SCOPES,
           state, challenge,
         });
         return Response.redirect(authorizeUrl, 302);

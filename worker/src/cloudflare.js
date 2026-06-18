@@ -32,6 +32,15 @@ export async function generatePkce() {
 // case Cloudflare ever changes them. No network call = no parse-failure point.
 export const DEFAULT_AUTHORIZE_URL = "https://dash.cloudflare.com/oauth2/auth";
 export const DEFAULT_TOKEN_URL = "https://dash.cloudflare.com/oauth2/token";
+
+// Cloudflare's consent form needs the exact scopes being granted — sending NONE makes the consent
+// page error ("An unexpected error occurred during the authorization process"), and even if it
+// didn't, the access token couldn't create the KV / upload the lockbox / flip on workers.dev. These
+// are the canonical Workers OAuth scopes (the same family `wrangler login` requests): account:read
+// to find the account, workers_scripts/kv/routes:write to deploy the lockbox + its workers.dev URL,
+// offline_access so the grant can be refreshed. Env-overridable for instances that scope tighter.
+export const DEFAULT_SCOPES =
+  "account:read user:read workers:write workers_scripts:write workers_kv_storage:write workers_routes:write offline_access";
 export async function discover(env) {
   return {
     authorization_endpoint: env.CF_OAUTH_AUTHORIZE_URL || DEFAULT_AUTHORIZE_URL,
