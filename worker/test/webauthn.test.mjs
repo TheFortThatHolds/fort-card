@@ -39,8 +39,18 @@ function fakeKV() {
   };
 }
 
+// mock the OnceGate DO: consume(id) returns ok:true the first time per id, ok:false after — so the
+// step-up reuse test (same jti twice) still fails the second time.
+function fakeOnce() {
+  const used = new Set();
+  return {
+    idFromName: (n) => n,
+    get: (id) => ({ fetch: async () => { const seen = used.has(id); used.add(id); return { json: async () => ({ ok: !seen }) }; } }),
+  };
+}
+
 const RP = "localhost", ORIGIN = "https://localhost", SPACE = "github:1";
-const env = { VAULT: fakeKV(), SESSION_SECRET: "unit-test-secret", WALLET_RPID: RP, WALLET_ORIGIN: ORIGIN };
+const env = { VAULT: fakeKV(), ONCE_GATE: fakeOnce(), SESSION_SECRET: "unit-test-secret", WALLET_RPID: RP, WALLET_ORIGIN: ORIGIN };
 const AUTH = { space: SPACE, human: true, login: "octocat" };
 
 const cookieOf = (resp) => { const sc = resp.headers.get("Set-Cookie") || ""; const m = sc.match(/fc_chal=([^;]*)/); return m ? decodeURIComponent(m[1]) : ""; };

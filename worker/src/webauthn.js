@@ -21,6 +21,7 @@
 // Step-up token: signed {space, action, jti, exp(2m)}; single-use (jti burned in KV on consume).
 
 import { b64u, b64ud, sign, verify, readCookie, setCookie } from "./auth.js";
+import { consumeOnce } from "./oncegate.js";
 
 const te = new TextEncoder();
 const td = new TextDecoder();
@@ -187,9 +188,11 @@ export async function requireStepUp(env, request, space, action) {
   if (!claim || claim.space !== space || claim.action !== action || !claim.jti) {
     return json({ error: `step-up required: a fresh passkey tap for '${action}' (POST /passkey/assert/begin then /finish)` }, 401);
   }
-  const usedKey = `_stepup_used:${claim.jti}`;
-  if (await env.VAULT.get(usedKey)) return json({ error: "step-up token already used" }, 401);
-  await env.VAULT.put(usedKey, "1", { expirationTtl: STEPUP_TTL_SEC + 60 });
+  // Atomically burn the one-shot token: two simultaneous uses can't both pass (a KV check-then-write
+  // can be raced). The FIRST use wins; any concurrent or later reuse is refused.
+  if (!(await consumeOnce(env, "stepup:" + claim.jti, STEPUP_TTL_SEC + 60))) {
+    return json({ error: "step-up token already used" }, 401);
+  }
   return null; // good — one-shot consumed
 }
 

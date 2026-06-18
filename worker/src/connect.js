@@ -18,6 +18,7 @@
 
 import { resolveSession, oauthConfigured, verify, readCookie } from "./auth.js";
 import { K, chargeCard, logEvent, notifyCardRequest, spaceSubscribed, listCardStates, cardOp, registerCard } from "./worker.js";
+import { consumeOnce } from "./oncegate.js";
 
 const CODE_TTL = 600;                 // auth code: 10 min
 const TOKEN_TTL = 60 * 60 * 24 * 30;  // agent pass: 30 days
@@ -194,6 +195,9 @@ document.getElementById('allow').onclick=approve;
       const stored = await env.VAULT.get("oauthcode:" + code, "json");
       if (!stored) return json({ error: "invalid_grant" }, 400);
       await env.VAULT.delete("oauthcode:" + code);
+      // Atomically burn the code so a duplicate /token request can't mint a second agent pass (a KV
+      // delete alone can be raced). First exchange wins; any racer gets invalid_grant.
+      if (!(await consumeOnce(env, "oauthcode:" + code, 600))) return json({ error: "invalid_grant" }, 400);
       if (stored.code_challenge) {
         const got = await sha256b64url(String(form.get("code_verifier") || ""));
         if (got !== stored.code_challenge) return json({ error: "invalid_grant", error_description: "PKCE failed" }, 400);
