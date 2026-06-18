@@ -1,7 +1,7 @@
 // Connect Cloudflare OAuth + provisioning helpers — PKCE, discovery, authorize URL, token exchange,
 // and the Cloudflare API calls (against a mock fetch). Run: node test/cloudflare.test.mjs
 import {
-  generatePkce, discover, DEFAULT_AUTHORIZE_URL, DEFAULT_TOKEN_URL, buildAuthorizeUrl, exchangeCode,
+  generatePkce, discover, DEFAULT_AUTHORIZE_URL, DEFAULT_TOKEN_URL, DEFAULT_SCOPES, buildAuthorizeUrl, exchangeCode,
   firstAccountId, createKvNamespace, uploadLockbox, enableWorkersDev, fetchLockboxSource,
 } from "../src/cloudflare.js";
 
@@ -54,6 +54,14 @@ function mockFetch(routes) {
     ok(u.searchParams.get("code_challenge") === "ch" && u.searchParams.get("code_challenge_method") === "S256", "PKCE challenge + S256");
     ok(u.searchParams.get("state") === "st", "state set");
     ok(!u.searchParams.has("scope"), "empty scope omitted (uses registered scopes)");
+    const us = new URL(buildAuthorizeUrl({ authorization_endpoint: "https://cf/auth", clientId: "cid", redirectUri: "https://card/cb", scope: DEFAULT_SCOPES, state: "st", challenge: "ch" }));
+    ok(us.searchParams.get("scope") === DEFAULT_SCOPES, "default scopes are carried when provided");
+  }
+
+  // 3b. DEFAULT_SCOPES covers the provisioning calls the callback makes (account + workers + kv)
+  {
+    ok(/\baccount:read\b/.test(DEFAULT_SCOPES), "default scopes include account:read");
+    ok(/\bworkers_scripts:write\b/.test(DEFAULT_SCOPES) && /\bworkers_kv_storage:write\b/.test(DEFAULT_SCOPES), "default scopes include workers script + kv write");
   }
 
   // 4. token exchange sends code_verifier, no client_secret; surfaces failures
