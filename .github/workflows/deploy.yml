@@ -1,8 +1,16 @@
 name: deploy
 
 # Configure ONE screen (GitHub repo → Settings → Secrets and variables → Actions), then run this.
-# It creates the KV namespace, binds the custom domain, sets every var, pushes the secrets, and
-# mints MASTER_KEY — so there is no Cloudflare-dashboard scavenger hunt.
+# It creates the KV namespace, binds the custom domain, sets every var, and pushes the secrets —
+# so there is no Cloudflare-dashboard scavenger hunt.
+#
+# SOVEREIGN BY DEFAULT — NO MASTER KEY. This deploy is the control plane: it holds only ciphertext
+# + lockbox relay tokens and NEVER a master key. Every customer's keys are sealed and opened in
+# THEIR OWN lockbox on THEIR OWN Cloudflare — the control plane is cryptographically incapable of
+# touching a plaintext key. So this workflow ensures NO MASTER_KEY exists on the worker (deleting
+# any leftover). The ONLY exception is a SELF-HOST single-worker deploy, where the operator runs
+# the whole thing on their own box and decrypts their own keys locally: set Variable SELF_HOST=1
+# and the workflow mints a MASTER_KEY instead.
 #
 # Secrets (Settings → Actions → Secrets):
 #   CLOUDFLARE_API_TOKEN   use Cloudflare's "Edit Cloudflare Workers" token template + your zone
@@ -16,6 +24,9 @@ name: deploy
 #   OPERATOR_SPACE         the billing space, e.g. github:<id>
 #   CF_OAUTH_CLIENT_ID     (optional) Connect Cloudflare one-tap onboarding — the Cloudflare OAuth
 #                          client id (non-secret, PKCE). Unset → onboarding falls back to claim-code.
+#   SELF_HOST              (optional) set to 1 ONLY for a single-worker self-host deploy that
+#                          decrypts its own keys locally — then this mints a MASTER_KEY. Unset
+#                          (the default / the managed control plane) → NO master key, ever.
 # Subscriptions turn on with NO key here: with OPERATOR_SPACE set, issue ONE Stripe card in that
 # space's wallet (allowed host api.stripe.com) and the worker bills by charging that card.
 
@@ -146,10 +157,27 @@ jobs:
             echo "STRIPE_KEY not set — billing stays off until it is."
           fi
 
-      - name: Mint MASTER_KEY once if absent (random, on the runner; a Worker secret, never KV)
+      # SELF-HOST ONLY (Variable SELF_HOST=1): mint a MASTER_KEY so a single-worker deploy can
+      # decrypt its own keys locally. The operator IS the only party here, so a local KEK is fine.
+      - name: Self-host — mint MASTER_KEY once if absent
+        if: vars.SELF_HOST == '1'
         run: |
           if $WR secret list | grep -q '"MASTER_KEY"'; then
-            echo "MASTER_KEY already set."
+            echo "MASTER_KEY already set (self-host)."
           else
             openssl rand -base64 32 | $WR secret put MASTER_KEY
+          fi
+
+      # CONTROL PLANE (default): ensure NO MASTER_KEY exists — no backdoor, no exceptions. Keys live
+      # only in customers' lockboxes; the plane must be cryptographically incapable of opening one.
+      # Deletes any leftover key from an earlier deploy. Idempotent: re-asserts "no key" every run.
+      - name: Control plane — ensure NO MASTER_KEY (no backdoor)
+        if: vars.SELF_HOST != '1'
+        run: |
+          if $WR secret list | grep -q '"MASTER_KEY"'; then
+            echo "Removing leftover MASTER_KEY from the control plane (sovereign: no backdoor)."
+            printf 'y\n' | $WR secret delete MASTER_KEY \
+              || echo "::warning::Could not auto-delete MASTER_KEY — run 'wrangler secret delete MASTER_KEY' once by hand."
+          else
+            echo "No MASTER_KEY on the control plane. Sovereign. Good."
           fi
