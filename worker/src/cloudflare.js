@@ -26,14 +26,17 @@ export async function generatePkce() {
 
 // ── RFC 8414 discovery: read authorize + token endpoints from Cloudflare's metadata doc, so the
 // exact URLs are never hardcoded (Cloudflare buries them; this is the correct way regardless). ──
-export const DEFAULT_DISCOVERY_URL = "https://dash.cloudflare.com/.well-known/oauth-authorization-server";
-export async function discover(env, fetchImpl = fetch) {
-  const url = env.CF_OAUTH_DISCOVERY_URL || DEFAULT_DISCOVERY_URL;
-  const r = await fetchImpl(url, { headers: { Accept: "application/json" } });
-  if (!r.ok) throw new Error("cloudflare oauth discovery failed (" + r.status + ")");
-  const m = await r.json();
-  if (!m.authorization_endpoint || !m.token_endpoint) throw new Error("discovery doc missing endpoints");
-  return { authorization_endpoint: m.authorization_endpoint, token_endpoint: m.token_endpoint };
+// Cloudflare's OAuth endpoints are FIXED (the same ones `wrangler login` uses) — there is no
+// RFC-8414 discovery doc to fetch (the .well-known URL returns the dashboard HTML, not JSON, which
+// is what crashed the connect flow). So we use the known endpoints directly, env-overridable in
+// case Cloudflare ever changes them. No network call = no parse-failure point.
+export const DEFAULT_AUTHORIZE_URL = "https://dash.cloudflare.com/oauth2/auth";
+export const DEFAULT_TOKEN_URL = "https://dash.cloudflare.com/oauth2/token";
+export async function discover(env) {
+  return {
+    authorization_endpoint: env.CF_OAUTH_AUTHORIZE_URL || DEFAULT_AUTHORIZE_URL,
+    token_endpoint: env.CF_OAUTH_TOKEN_URL || DEFAULT_TOKEN_URL,
+  };
 }
 
 // Build the consent URL we send the owner to.
