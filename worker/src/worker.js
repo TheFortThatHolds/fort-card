@@ -68,8 +68,9 @@ import { isSubscribed, createCheckout, confirmCheckout, priceCents, billingSumma
 import { sendWelcomeEmail, sendCancelEmail, sendResumeEmail, emailConfigured } from "./email.js";
 import { handleConnect } from "./connect.js";
 import { CardState } from "./cardstate.js";
-// The Durable Object class must be exported from the Worker's entry module so the runtime can bind it.
-export { CardState };
+import { OnceGate } from "./oncegate.js";
+// Durable Object classes must be exported from the Worker's entry module so the runtime can bind them.
+export { CardState, OnceGate };
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();

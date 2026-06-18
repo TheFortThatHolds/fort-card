@@ -13,6 +13,8 @@
 //   • Short-TTL: ~30 min, enforced on verify AND via KV expirationTtl (belt + suspenders).
 //   • Phone-home lands PENDING — the owner's approve tap (passkey) is still the gate, so a leaked
 //     or stray code can never silently bind a worker to a space.
+import { consumeOnce } from "./oncegate.js";
+
 const enc = new TextEncoder();
 const b64url = (buf) =>
   btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
@@ -63,6 +65,12 @@ export async function verifyAndConsumeClaim(env, code, now = Date.now()) {
     await env.VAULT.delete(claimKey(hash));
     return null;
   }
-  await env.VAULT.delete(claimKey(hash)); // consume — one-time
+  // Atomically burn the code: a plain KV delete can be raced (two phone-homes both read the record
+  // before either deletes), so the FIRST consume through OnceGate wins and any duplicate is refused.
+  if (!(await consumeOnce(env, "claim:" + hash, DEFAULT_CLAIM_TTL))) {
+    await env.VAULT.delete(claimKey(hash));
+    return null;
+  }
+  await env.VAULT.delete(claimKey(hash)); // also clear the KV record (cleanup)
   return { space: rec.space };
 }

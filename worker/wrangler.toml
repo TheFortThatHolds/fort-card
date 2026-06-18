@@ -20,9 +20,19 @@ kv_namespaces = [
 name = "CARD_STATE"
 class_name = "CardState"
 
+# OnceGate: atomically consumes a one-time token (claim / OAuth / step-up) exactly once — the same
+# strong-consistency fix applied to the single-use-token race class.
+[[durable_objects.bindings]]
+name = "ONCE_GATE"
+class_name = "OnceGate"
+
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["CardState"]
+
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["OnceGate"]
 
 # ── No domain route and no identity [vars] live in this template ON PURPOSE. ──
 # This is what the "Deploy to Cloudflare" button deploys: a stranger gets a working vault on
