@@ -316,34 +316,54 @@ export async function spaceSubscribed(env, space) {
 // it): run the rules, inject the key server-side, return only the response. Mutates used + logs. ──
 export async function chargeCard(env, space, card, req) {
   const decline = async (reason) => { await logEvent(env, space, "card.decline", { id: card.id, reason }); return { authorized: false, decline_reason: reason }; };
-  if (card.pending) return decline("card pending owner approval");
-  if (card.frozen) return decline("card frozen");
-  if (card.expires_at && Date.parse(card.expires_at) < Date.now()) return decline("card expired");
-  if (card.limit != null && card.used >= card.limit) return decline("limit reached");
+  // The kill-fences, evaluated against a LIVE card record (never a stale snapshot the caller handed
+  // us). A freeze / revoke / expiry / cap that landed since must win. Returns a decline reason or null.
+  const fence = (c) =>
+    !c ? "card revoked" :
+    c.pending ? "card pending owner approval" :
+    c.frozen ? "card frozen" :
+    (c.expires_at && Date.parse(c.expires_at) < Date.now()) ? "card expired" :
+    (c.limit != null && (c.used || 0) >= c.limit) ? "limit reached" : null;
+
+  // Request-shape + host checks (cheap, no I/O).
   if (!req || !req.url) return decline("request url required");
   let host;
   try { host = new URL(req.url).host; } catch { return decline("bad url"); }
   if (ssrfBlocked(host)) return decline(`host ${host} blocked (SSRF)`);
   if (!card.allowed_hosts.includes(host)) return decline(`host ${host} not allowed for this card`);
-  const secRaw = await env.VAULT.get(K(space, "secret", card.secret));
+
+  // Look the rules up FRESH right before acting — not on the snapshot the caller read. This is the
+  // kill-switch fix: previously the fences were checked once on a stale copy, and after the charge
+  // the WHOLE stale record was written back — which silently resurrected `frozen:false` over a
+  // freeze and let the card bully through forever. Now a freeze is enforced on a live read, and the
+  // commit re-reads + re-checks so a spend can never overwrite the freeze.
+  const fresh = await env.VAULT.get(K(space, "card", card.id), "json");
+  { const blocked = fence(fresh); if (blocked) return decline(blocked); }
+
+  const secRaw = await env.VAULT.get(K(space, "secret", fresh.secret));
   if (!secRaw) return decline("secret missing from vault");
   const sealed = JSON.parse(secRaw);
   let resp, out;
   if (await splitMode(env, space)) {
-    const r = await callLastMile(env, space, "/charge", { secret: sealed, dek: await wrappedDEKFor(env, space, sealed.keyRef), header: card.header, header_prefix: card.header_prefix, request: { url: req.url, method: req.method || "GET", headers: req.headers || {}, body: req.body } });
+    const r = await callLastMile(env, space, "/charge", { secret: sealed, dek: await wrappedDEKFor(env, space, sealed.keyRef), header: fresh.header, header_prefix: fresh.header_prefix, request: { url: req.url, method: req.method || "GET", headers: req.headers || {}, body: req.body } });
     resp = { status: r.status }; out = r.body;
   } else {
     const key = await decrypt(env, space, sealed);
-    const httpResp = await fetch(req.url, { method: req.method || "GET", headers: { ...(req.headers || {}), [card.header]: card.header_prefix + key }, body: req.body == null ? undefined : typeof req.body === "string" ? req.body : JSON.stringify(req.body) });
+    const httpResp = await fetch(req.url, { method: req.method || "GET", headers: { ...(req.headers || {}), [fresh.header]: fresh.header_prefix + key }, body: req.body == null ? undefined : typeof req.body === "string" ? req.body : JSON.stringify(req.body) });
     const text = await httpResp.text();
     try { out = JSON.parse(text); } catch { out = text; }
     resp = { status: httpResp.status };
   }
-  card.used++;
-  await env.VAULT.put(K(space, "card", card.id), JSON.stringify(card));
+  // Commit on the LIVEST record: re-read (a freeze may have landed during the upstream call),
+  // re-check the fences, then bump `used` on THAT record. Never write our pre-call copy back, so a
+  // freeze is never clobbered — at worst one in-flight call slips, and every charge after it stops.
+  const latest = await env.VAULT.get(K(space, "card", card.id), "json");
+  { const blocked = fence(latest); if (blocked) return decline(blocked); }
+  latest.used = (latest.used || 0) + 1;
+  await env.VAULT.put(K(space, "card", card.id), JSON.stringify(latest));
   // provenance: who charged, where, to what host, and where they're left on the cap.
-  await logEvent(env, space, "card.charge", { id: card.id, holder: card.holder || null, host, method: req.method || "GET", status: resp.status, used: card.used, limit: card.limit ?? null });
-  return { authorized: true, status: resp.status, body: out, card: { id: card.id, used: card.used, remaining: card.limit != null ? Math.max(0, card.limit - card.used) : null } };
+  await logEvent(env, space, "card.charge", { id: card.id, holder: latest.holder || null, host, method: req.method || "GET", status: resp.status, used: latest.used, limit: latest.limit ?? null });
+  return { authorized: true, status: resp.status, body: out, card: { id: card.id, used: latest.used, remaining: latest.limit != null ? Math.max(0, latest.limit - latest.used) : null } };
 }
 
 export default {
