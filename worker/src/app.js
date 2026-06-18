@@ -161,6 +161,7 @@ label{font-size:13px;color:#cdc2af;display:block;margin-top:10px}
       <div class="tiles">
         <button class="tile" id="tile-vault"><span class="ic">🔑</span><b>Vault</b><span class="muted">Add &amp; roll your keys</span></button>
         <button class="tile" id="tile-log"><span class="ic">📜</span><b>Log</b><span class="muted">What your agents did</span></button>
+        <button class="tile" id="tile-data"><span class="ic">🛡️</span><b>Data &amp; privacy</b><span class="muted">Export or delete it all</span></button>
       </div>
 
       <footer id="subfoot" class="hide" style="margin:36px 0 14px;padding-top:18px;border-top:1px solid #2c251c;text-align:center">
@@ -228,6 +229,21 @@ label{font-size:13px;color:#cdc2af;display:block;margin-top:10px}
       <a class="btn sm" id="logexport" href="/events/export" download style="display:inline-block;margin-bottom:14px">⬇ Export full log</a>
       <div id="events" class="card"><div class="muted">Loading…</div></div>
     </div>
+
+    <!-- DATA & PRIVACY: download everything, or erase it all (GDPR / CCPA data rights) -->
+    <div id="view-data" class="hide">
+      <button class="btn sm back" data-back>← Back</button>
+      <h2>Your data &amp; privacy</h2>
+      <p class="muted" style="margin-bottom:14px">Download everything we hold for your space, or erase it permanently. Secret values are never exported — the wallet can't read them.</p>
+      <button class="btn sm" id="exportdata">Download my data (JSON)</button>
+      <button class="btn sm" id="erasedata" style="margin-left:10px;color:#e7857a;border-color:#5a3a36">Delete everything</button>
+      <!-- Two-step confirm: "Delete everything" only OPENS this; "Keep my data" is the prominent way out. -->
+      <div id="eraseconfirm" class="hide" style="margin-top:14px">
+        <div class="muted" style="margin-bottom:12px">This permanently deletes your secrets, cards, bearers, and statement — and cancels your subscription. It cannot be undone.</div>
+        <button class="btn p sm" id="erasekeep">Keep my data</button>
+        <button class="btn sm" id="erasedo" style="margin-left:10px;color:#e7857a;border-color:#5a3a36">Yes, delete everything</button>
+      </div>
+    </div>
   </div>
 </div>
 <div class="toast" id="toast"></div>
@@ -280,6 +296,16 @@ async function passkeyAssert(){
   await jget('/passkey/assert/finish',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:c.id,clientDataJSON:b2b(c.response.clientDataJSON),authenticatorData:b2b(c.response.authenticatorData),signature:b2b(c.response.signature)})});
 }
 async function unlock(){const m=$('#lockmsg');try{m.textContent='Confirm on your device…';await passkeyAssert();showApp()}catch(e){m.innerHTML='<b style="color:#e7857a">'+(e.message||e.name||'cancelled')+'</b>'}}
+
+// Per-action step-up: a FRESH fingerprint/Face ID tap that yields a one-shot token for exactly this
+// action (the banking-app gate). Sent as the X-Fort-Action header; the server burns it after one use.
+async function stepUp(action){
+  const {publicKey:o}=await jget('/passkey/assert/begin',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action})});
+  o.challenge=s2b(o.challenge);o.allowCredentials=(o.allowCredentials||[]).map(c=>({...c,id:s2b(c.id)}));
+  const c=await navigator.credentials.get({publicKey:o});
+  const r=await jget('/passkey/assert/finish',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:c.id,clientDataJSON:b2b(c.response.clientDataJSON),authenticatorData:b2b(c.response.authenticatorData),signature:b2b(c.response.signature)})});
+  return r.action_token;
+}
 
 // run a sensitive action; the unlock session authorizes it. if it's locked, drop back to the tap.
 async function act(fn,okMsg){try{await fn();if(okMsg)toast(okMsg);load()}catch(e){const msg=e.message||'';if(msg.indexOf('lock')>=0){if(hasPk){toast('Locked — tap to unlock');showLock(me)}else toast('Enable your passkey first — tap Add passkey')}else toast(msg||e.name||'failed')}}
@@ -465,10 +491,27 @@ $('#installbtn').onclick=async()=>{if(!deferredPrompt)return;deferredPrompt.prom
 $('#notifbtn').onclick=()=>enablePush().then(()=>$('#notifbar').classList.add('hide'));
 $('#store').onclick=()=>{if(!$('#s_name').value||!$('#s_val').value){toast('Name and value required');return}act(async()=>{await storeKey($('#s_name').value,$('#s_val').value);$('#s_name').value='';$('#s_val').value=''},'Key stored ✓')};
 
+// ── Data & privacy (GDPR / CCPA): export your data, or erase everything on demand. Both require a
+// FRESH passkey step-up (one-shot token), on top of the two-step "are you sure" confirm for erase. ──
+const lockaware=(m)=>{if((m||'').indexOf('lock')>=0&&hasPk){toast('Locked — tap to unlock');showLock(me);return true}return false};
+$('#exportdata')&&($('#exportdata').onclick=async()=>{
+  try{const tok=await stepUp('data.export');
+    const d=await jget('/export',{headers:{'X-Fort-Action':tok}});const blob=new Blob([JSON.stringify(d,null,2)],{type:'application/json'});
+    const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='fort-card-export-'+(d.generated_at||'').slice(0,10)+'.json';document.body.append(a);a.click();a.remove();URL.revokeObjectURL(a.href);toast('Downloaded ✓')}
+  catch(e){const m=e.message||'';if(!lockaware(m))toast(m||'export failed')}});
+$('#erasedata')&&($('#erasedata').onclick=()=>{$('#eraseconfirm').classList.remove('hide')});
+$('#erasekeep')&&($('#erasekeep').onclick=()=>{$('#eraseconfirm').classList.add('hide')});
+$('#erasedo')&&($('#erasedo').onclick=async()=>{$('#erasedo').disabled=true;
+  try{const tok=await stepUp('data.erase');
+    await jget('/erase',{method:'POST',headers:{'Content-Type':'application/json','X-Fort-Action':tok},body:JSON.stringify({confirm:'DELETE'})});
+    toast('Everything deleted.');setTimeout(()=>location.reload(),1200)}
+  catch(e){const m=e.message||'';$('#erasedo').disabled=false;if(!lockaware(m))toast(m||'erase failed')}});
+
 // ── views: home / vault / log (single page, no reload) ──
-function showView(v){['home','vault','log'].forEach(n=>{const el=$('#view-'+n);if(el)el.classList.toggle('hide',n!==v)});if(v!=='home')scrollTo(0,0)}
+function showView(v){['home','vault','log','data'].forEach(n=>{const el=$('#view-'+n);if(el)el.classList.toggle('hide',n!==v)});if(v!=='home')scrollTo(0,0)}
 $('#tile-vault')&&($('#tile-vault').onclick=()=>{showView('vault');refreshLastmile()});
 $('#tile-log')&&($('#tile-log').onclick=()=>{showView('log');loadEvents()});
+$('#tile-data')&&($('#tile-data').onclick=()=>{showView('data');$('#eraseconfirm').classList.add('hide')});
 $('#lmconnectbtn')&&($('#lmconnectbtn').onclick=()=>{const u=$('#lm_url').value.trim();if(!u){toast('Paste your last-mile URL');return}act(async()=>{await jget('/lastmile/connect',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:u})});$('#lm_url').value='';await refreshLastmile()},'Vault connected ✓')});
 // Claim-code onboarding: mint a one-time code, show it + the control-plane URL to paste on Cloudflare's deploy screen.
 $('#lmsetupbtn')&&($('#lmsetupbtn').onclick=()=>{act(async()=>{const r=await jget('/lastmile/claim-code',{method:'POST'});const c=$('#lmclaimcode');if(c)c.textContent=r.code;const cp=$('#lmclaimcp');if(cp)cp.textContent=r.control_plane_url;$('#lmclaim').classList.remove('hide')},'Setup code ready — deploy your lockbox')});

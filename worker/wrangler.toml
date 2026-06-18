@@ -34,6 +34,15 @@ new_sqlite_classes = ["CardState"]
 tag = "v2"
 new_sqlite_classes = ["OnceGate"]
 
+# ── Lapse-lifecycle sweep (the scheduled() handler in src/worker.js). Runs daily: opens a 30-day
+# grace window on lapsed subscriptions, emails the customer a re-up + signed download + signed delete
+# link, warns 7 days before the deadline, and — only when the Worker var PURGE_ENABLED is "1"/"true" —
+# permanently wipes the space at day 30. Ships DORMANT: leave PURGE_ENABLED unset and the sweep does
+# everything except the delete (it logs "billing.purge_due") so you can watch it run dry before arming.
+# No effect on a billing-off instance (no STRIPE_KEY → the sweep returns immediately).
+[triggers]
+crons = ["0 9 * * *"]
+
 # ── No domain route and no identity [vars] live in this template ON PURPOSE. ──
 # This is what the "Deploy to Cloudflare" button deploys: a stranger gets a working vault on
 # their own *.workers.dev in single-token mode — set MASTER_KEY + FORT_KEY (see .dev.vars.example)

@@ -99,3 +99,59 @@ export function sendResumeEmail(env, { to, space, origin, current_period_end }) 
       "\n\nOpen your wallet: " + manage,
   });
 }
+
+// A quieter secondary button — used for the download/delete paths so they never out-shout the
+// "re-up / keep my data" action.
+const btn2 = (href, label, danger) =>
+  `<p style="margin:0 0 12px"><a href="${ESC(href)}" style="display:inline-block;background:transparent;color:${danger ? "#a23b2d" : "#6b6155"};text-decoration:none;font-weight:600;padding:10px 18px;border:1px solid ${danger ? "#d8b4ad" : "#d8cfc0"};border-radius:10px">${label}</a></p>`;
+
+// Subscription LAPSED — locked out, but the data survives a grace window. The email carries all three
+// doors: re-up, download your data, or delete it now. The download/delete links are SIGNED and work
+// without logging in (the customer is locked out — the token is the auth). States the exact deletion
+// date. `purge_at` is epoch ms (the grace deadline).
+export function sendLapseEmail(env, { to, space, origin, downloadUrl, deleteUrl, purge_at }) {
+  const manage = origin + "/app";
+  const end = fmtDate(purge_at ? Math.floor(purge_at / 1000) : null);
+  return send(env, {
+    to,
+    subject: "Your Fort Card is locked — data kept until " + (end || "your grace period ends"),
+    heading: `Your Fort Card is locked`,
+    bodyHtml:
+      `<p style="margin:0 0 14px">Your subscription didn't renew, so your wallet is locked and your cards have stopped working. <b>Your data is safe</b> — we keep everything${end ? ` until <b>${ESC(end)}</b>` : " for 30 days"}, then it's permanently deleted.</p>` +
+      `<p style="margin:0 0 14px">Pick up exactly where you left off:</p>` +
+      btn(manage, "Re-up & unlock my wallet") +
+      `<p style="margin:0 0 8px;color:#6b6155;font-size:14px">Or, while you decide:</p>` +
+      btn2(downloadUrl, "Download my data") +
+      btn2(deleteUrl, "Delete my data now", true) +
+      `<p style="color:#6b6155;font-size:13px;margin:14px 0 0">Secret values are never included in the download — the wallet can't read them. Deleting is permanent and can't be undone.</p>`,
+    bodyText:
+      "Your Fort Card subscription didn't renew, so your wallet is locked. Your data is safe" + (end ? " until " + end : " for 30 days") + ", then it's permanently deleted." +
+      "\n\nRe-up & unlock: " + manage +
+      "\nDownload my data: " + downloadUrl +
+      "\nDelete my data now: " + deleteUrl +
+      "\n\nSecret values are never included in the download. Deleting is permanent.",
+  });
+}
+
+// 7-day warning before the grace window closes and the data is permanently deleted. Same three doors.
+export function sendPurgeReminderEmail(env, { to, space, origin, downloadUrl, deleteUrl, purge_at }) {
+  const manage = origin + "/app";
+  const end = fmtDate(purge_at ? Math.floor(purge_at / 1000) : null);
+  return send(env, {
+    to,
+    subject: "Last chance — your Fort Card data is deleted " + (end || "soon"),
+    heading: `Your data is deleted ${end ? "on " + end : "soon"}`,
+    bodyHtml:
+      `<p style="margin:0 0 14px">Heads up: your Fort Card has been locked for a while, and on <b>${ESC(end || "your grace deadline")}</b> everything in your wallet is <b>permanently deleted</b> — secrets, cards, and your statement.</p>` +
+      `<p style="margin:0 0 14px">If you want it back, re-up before then and nothing is lost:</p>` +
+      btn(manage, "Re-up & keep everything") +
+      `<p style="margin:0 0 8px;color:#6b6155;font-size:14px">Otherwise:</p>` +
+      btn2(downloadUrl, "Download my data") +
+      btn2(deleteUrl, "Delete my data now", true),
+    bodyText:
+      "Your Fort Card data is permanently deleted on " + (end || "your grace deadline") + " — secrets, cards, statement." +
+      "\n\nRe-up & keep everything: " + manage +
+      "\nDownload my data: " + downloadUrl +
+      "\nDelete my data now: " + deleteUrl,
+  });
+}
