@@ -1,13 +1,19 @@
 name: deploy
 
 # Configure ONE screen (GitHub repo → Settings → Secrets and variables → Actions), then run this.
-# It creates the KV namespace, binds the custom domain, sets every var, pushes the secrets, and
-# mints MASTER_KEY — so there is no Cloudflare-dashboard scavenger hunt.
+# It creates the KV namespace, binds the custom domain, and sets the [vars]. It ships CODE + config
+# ONLY — it never touches your worker secrets.
 #
-# Secrets (Settings → Actions → Secrets):
+# CI deploy credentials (Settings → Actions → Secrets) — used only to talk to Cloudflare, not stored on the worker:
 #   CLOUDFLARE_API_TOKEN   use Cloudflare's "Edit Cloudflare Workers" token template + your zone
 #   CLOUDFLARE_ACCOUNT_ID  Cloudflare dashboard, right sidebar
-#   GH_CLIENT_SECRET       the GitHub App's client secret
+#
+# Worker secrets are set ONCE, out of band, directly on the Worker (never via CI):
+#   npx wrangler secret put GH_CLIENT_SECRET   # GitHub App client secret (OAuth login)
+#   npx wrangler secret put GH_APP_PRIVATE_KEY # wake-back app key
+#   npx wrangler secret put STRIPE_KEY         # billing (optional)
+#   npx wrangler secret put MASTER_KEY         # custodial relic — prefer the customer lockbox instead
+#
 # Variables (Settings → Actions → Variables) — all optional; each falls back to the operator's
 # current value so a deploy works with none of them set:
 #   GH_CLIENT_ID           the GitHub App's client id (Iv23…)
@@ -92,7 +98,6 @@ jobs:
             echo "WALLET_ORIGIN = \"https://$DOMAIN\""
             echo "GH_APP_ID = \"$APP_ID\""
             echo "OPERATOR_SPACE = \"$OP_SPACE\""
-            echo "FORT_SPACE = \"github:$OP_SPACE\""
             echo "SUBSCRIPTION_PRICE_CENTS = \"800\""
             echo "SUBSCRIPTION_CURRENCY = \"usd\""
             echo "SUBSCRIPTION_PRODUCT_NAME = \"Fort Card\""
@@ -111,40 +116,11 @@ jobs:
       - name: Deploy
         run: $WR deploy
 
-      - name: Set GH_CLIENT_SECRET (from repo secret; masked, never logged)
-        env:
-          SECRET: ${{ secrets.GH_CLIENT_SECRET }}
-        run: |
-          if [ -n "$SECRET" ]; then
-            printf '%s' "$SECRET" | $WR secret put GH_CLIENT_SECRET
-          else
-            echo "GH_CLIENT_SECRET not set yet — skipping (login stays off until it is)."
-          fi
-
-      - name: Set GH_APP_PRIVATE_KEY (from repo secret; masked, never logged — the wake-back app key)
-        env:
-          SECRET: ${{ secrets.GH_APP_PRIVATE_KEY }}
-        run: |
-          if [ -n "$SECRET" ]; then
-            printf '%s' "$SECRET" | $WR secret put GH_APP_PRIVATE_KEY
-          else
-            echo "GH_APP_PRIVATE_KEY not set yet — skipping (wake-back stays off until it is)."
-          fi
-
-      - name: Set STRIPE_KEY (billing; from repo secret; masked, never logged)
-        env:
-          SECRET: ${{ secrets.STRIPE_KEY }}
-        run: |
-          if [ -n "$SECRET" ]; then
-            printf '%s' "$SECRET" | $WR secret put STRIPE_KEY
-          else
-            echo "STRIPE_KEY not set — billing stays off until it is."
-          fi
-
-      - name: Mint MASTER_KEY once if absent (random, on the runner; a Worker secret, never KV)
-        run: |
-          if $WR secret list | grep -q '"MASTER_KEY"'; then
-            echo "MASTER_KEY already set."
-          else
-            openssl rand -base64 32 | $WR secret put MASTER_KEY
-          fi
+      # ── Secrets are NOT handled here, on purpose. ──
+      # The deploy ships CODE + config only; it never touches your keys. Worker secrets
+      # (GH_CLIENT_SECRET, GH_APP_PRIVATE_KEY, STRIPE_KEY, and the vault MASTER_KEY) are set
+      # ONCE, out of band, directly on the Worker — `npx wrangler secret put <NAME>` — and they
+      # persist across deploys untouched. CI has no business carrying credentials through a
+      # runner or holding them in GitHub Actions secrets.
+      #   NOTE: MASTER_KEY is a custodial relic. The sovereign path is the customer's own lockbox,
+      #   which self-mints its master key on its own Cloudflare; the control plane should hold none.
