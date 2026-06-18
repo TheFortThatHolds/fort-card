@@ -92,6 +92,7 @@ jobs:
             echo "WALLET_ORIGIN = \"https://$DOMAIN\""
             echo "GH_APP_ID = \"$APP_ID\""
             echo "OPERATOR_SPACE = \"$OP_SPACE\""
+            echo "FORT_SPACE = \"github:$OP_SPACE\""
             echo "SUBSCRIPTION_PRICE_CENTS = \"800\""
             echo "SUBSCRIPTION_CURRENCY = \"usd\""
             echo "SUBSCRIPTION_PRODUCT_NAME = \"Fort Card\""
