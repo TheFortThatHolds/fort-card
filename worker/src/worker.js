@@ -836,18 +836,25 @@ export default {
       if (!human) return json({ error: HUMAN_REQUIRED }, 403);
       { const g = requireSub(); if (g) return g; }
       if (!env.CF_OAUTH_CLIENT_ID) return json({ error: "Cloudflare connect isn't configured yet (CF_OAUTH_CLIENT_ID unset)" }, 503);
-      const { authorization_endpoint } = await cf.discover(env);
-      const { verifier, challenge } = await cf.generatePkce();
-      const state = crypto.randomUUID().replace(/-/g, "") + crypto.randomUUID().replace(/-/g, "");
-      await env.VAULT.put("cfstate:" + state, JSON.stringify({ space, verifier, exp: Date.now() + 600000 }), { expirationTtl: 600 });
-      const authorizeUrl = cf.buildAuthorizeUrl({
-        authorization_endpoint,
-        clientId: env.CF_OAUTH_CLIENT_ID,
-        redirectUri: url.origin + "/cloudflare/callback",
-        scope: env.CF_OAUTH_SCOPES || "",
-        state, challenge,
-      });
-      return Response.redirect(authorizeUrl, 302);
+      // Fail GRACEFULLY: discovery hits an external URL that may be wrong/unreachable. A throw here
+      // would crash the whole worker (1101) for a logged-in owner. Catch it → bounce back to /app
+      // with an error flag the PWA can toast, instead of taking the wallet down.
+      try {
+        const { authorization_endpoint } = await cf.discover(env);
+        const { verifier, challenge } = await cf.generatePkce();
+        const state = crypto.randomUUID().replace(/-/g, "") + crypto.randomUUID().replace(/-/g, "");
+        await env.VAULT.put("cfstate:" + state, JSON.stringify({ space, verifier, exp: Date.now() + 600000 }), { expirationTtl: 600 });
+        const authorizeUrl = cf.buildAuthorizeUrl({
+          authorization_endpoint,
+          clientId: env.CF_OAUTH_CLIENT_ID,
+          redirectUri: url.origin + "/cloudflare/callback",
+          scope: env.CF_OAUTH_SCOPES || "",
+          state, challenge,
+        });
+        return Response.redirect(authorizeUrl, 302);
+      } catch (e) {
+        return Response.redirect(url.origin + "/app?cloudflare=error&reason=" + encodeURIComponent((e && e.message) || "connect_unavailable"), 302);
+      }
     }
     // ── CONNECT CLOUDFLARE — finish: exchange the code, then drive Cloudflare's API to create the
     // KV + deploy the lockbox into the customer's own account, claim its relay token, store config.
