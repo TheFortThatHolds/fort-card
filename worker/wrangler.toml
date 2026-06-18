@@ -11,6 +11,19 @@ kv_namespaces = [
   { binding = "VAULT", id = "PASTE_YOUR_KV_NAMESPACE_ID_HERE" }
 ]
 
+# ── Card live state lives in a Durable Object (CardState), not KV. ──
+# A card's frozen/revoked/used state must be strongly consistent and atomic — it's the kill-switch.
+# KV is eventually consistent with no compare-and-set, so a spend could race a freeze/revoke and
+# resurrect or un-freeze a card. The DO serializes every spend/freeze/revoke for a card through one
+# instance, so a freeze/revoke is instant and a spend can only consume. (Secrets stay in KV.)
+[[durable_objects.bindings]]
+name = "CARD_STATE"
+class_name = "CardState"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["CardState"]
+
 # ── No domain route and no identity [vars] live in this template ON PURPOSE. ──
 # This is what the "Deploy to Cloudflare" button deploys: a stranger gets a working vault on
 # their own *.workers.dev in single-token mode — set MASTER_KEY + FORT_KEY (see .dev.vars.example)

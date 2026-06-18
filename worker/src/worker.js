@@ -67,6 +67,9 @@ import { postComment, appConfigured, getInstallationOwner } from "./github-app.j
 import { isSubscribed, createCheckout, confirmCheckout, priceCents, billingSummary, cancelSubscription, resumeSubscription } from "./stripe.js";
 import { sendWelcomeEmail, sendCancelEmail, sendResumeEmail, emailConfigured } from "./email.js";
 import { handleConnect } from "./connect.js";
+import { CardState } from "./cardstate.js";
+// The Durable Object class must be exported from the Worker's entry module so the runtime can bind it.
+export { CardState };
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
@@ -83,6 +86,61 @@ const HUMAN_REQUIRED =
 // Every record is namespaced by the tenant's space — the hard isolation boundary. Deny by
 // default: no key is ever read or written without a space in front of it.
 export const K = (space, ...parts) => space + ":" + parts.join(":");
+
+// ── Card live state lives in the CardState Durable Object (one instance per card) — the strongly-
+// consistent home for frozen/revoked/used so a freeze/revoke is instant and a spend can only
+// consume. A KV index of card IDs per space lets us enumerate a space's cards for listing; each
+// card's authoritative state is always read fresh from its DO. ──
+function cardDO(env, space, id) {
+  return env.CARD_STATE.get(env.CARD_STATE.idFromName(space + ":" + id));
+}
+export async function cardOp(env, space, id, op, payload) {
+  const r = await cardDO(env, space, id).fetch("https://do/" + op, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload || {}),
+  });
+  return r.json();
+}
+const cardIdxPrefix = (space) => K(space, "cardidx", "");
+export async function registerCard(env, space, id) { await env.VAULT.put(cardIdxPrefix(space) + id, "1"); }
+export async function unregisterCard(env, space, id) { await env.VAULT.delete(cardIdxPrefix(space) + id); }
+// One-time, idempotent migration: import legacy KV card records (K(space,"card",id), the pre-DO
+// home) into each card's Durable Object + the id index, so existing cards survive the cutover.
+// Marked done with a per-space flag so it runs at most once. Old KV records are left in place (inert).
+export async function migrateSpaceCards(env, space) {
+  if (await env.VAULT.get(K(space, "cardidx_migrated"))) return;
+  let cursor;
+  const prefix = K(space, "card", "");
+  do {
+    const page = await env.VAULT.list({ prefix, cursor });
+    for (const k of page.keys) {
+      const raw = await env.VAULT.get(k.name);
+      if (!raw) continue;
+      let c; try { c = JSON.parse(raw); } catch { continue; }
+      const id = k.name.slice(prefix.length);
+      await cardOp(env, space, id, "init", { card: c });
+      await registerCard(env, space, id);
+    }
+    cursor = page.list_complete ? undefined : page.cursor;
+  } while (cursor);
+  await env.VAULT.put(K(space, "cardidx_migrated"), new Date().toISOString());
+}
+
+// Every live card record in a space (authoritative state from each DO; stale index entries skipped).
+export async function listCardStates(env, space) {
+  await migrateSpaceCards(env, space);
+  const out = [];
+  let cursor;
+  const prefix = cardIdxPrefix(space);
+  do {
+    const page = await env.VAULT.list({ prefix, cursor });
+    for (const k of page.keys) {
+      const c = await cardOp(env, space, k.name.slice(prefix.length), "status");
+      if (c) out.push(c);
+    }
+    cursor = page.list_complete ? undefined : page.cursor;
+  } while (cursor);
+  return out;
+}
 
 // ── envelope encryption: MASTER_KEY is the KEK (the sovereign root — never rotated in-app);
 // under it, each SPACE has its own rotatable DATA key (DEK) in KV, wrapped by the KEK. A tenant
@@ -312,58 +370,40 @@ export async function spaceSubscribed(env, space) {
   return await isSubscribed(env, stripeCharge(env), space);
 }
 
-// ── charge a card in a space (the settle path, factored so /cards/:id/use and the agent path share
-// it): run the rules, inject the key server-side, return only the response. Mutates used + logs. ──
-export async function chargeCard(env, space, card, req) {
-  const decline = async (reason) => { await logEvent(env, space, "card.decline", { id: card.id, reason }); return { authorized: false, decline_reason: reason }; };
-  // The kill-fences, evaluated against a LIVE card record (never a stale snapshot the caller handed
-  // us). A freeze / revoke / expiry / cap that landed since must win. Returns a decline reason or null.
-  const fence = (c) =>
-    !c ? "card revoked" :
-    c.pending ? "card pending owner approval" :
-    c.frozen ? "card frozen" :
-    (c.expires_at && Date.parse(c.expires_at) < Date.now()) ? "card expired" :
-    (c.limit != null && (c.used || 0) >= c.limit) ? "limit reached" : null;
-
-  // Request-shape + host checks (cheap, no I/O).
+// ── spend a card in a space (the settle path, shared by /cards/:id/use and the agent path): the
+// CardState DO atomically fences (revoked/frozen/pending/expired/cap/host) AND counts the spend in
+// one serialized step, then we inject the key server-side and return only the response. The spend
+// NEVER writes card state itself — so it can never resurrect a revoked card or clobber a freeze. ──
+export async function chargeCard(env, space, id, req) {
+  const decline = async (reason) => { await logEvent(env, space, "card.decline", { id, reason }); return { authorized: false, decline_reason: reason }; };
   if (!req || !req.url) return decline("request url required");
   let host;
   try { host = new URL(req.url).host; } catch { return decline("bad url"); }
   if (ssrfBlocked(host)) return decline(`host ${host} blocked (SSRF)`);
-  if (!card.allowed_hosts.includes(host)) return decline(`host ${host} not allowed for this card`);
 
-  // Look the rules up FRESH right before acting — not on the snapshot the caller read. This is the
-  // kill-switch fix: previously the fences were checked once on a stale copy, and after the charge
-  // the WHOLE stale record was written back — which silently resurrected `frozen:false` over a
-  // freeze and let the card bully through forever. Now a freeze is enforced on a live read, and the
-  // commit re-reads + re-checks so a spend can never overwrite the freeze.
-  const fresh = await env.VAULT.get(K(space, "card", card.id), "json");
-  { const blocked = fence(fresh); if (blocked) return decline(blocked); }
+  await migrateSpaceCards(env, space); // import any legacy KV card into its DO before first spend
+  // Atomic reserve: fence + increment happen together inside the card's Durable Object. If it
+  // declines (frozen/revoked/expired/over-cap/off-host) nothing is consumed and we never touch state.
+  const res = await cardOp(env, space, id, "reserve", { host });
+  if (!res.authorized) return decline(res.decline_reason || "declined");
+  const card = res.card; // the live record the DO just reserved against (has secret name + header)
 
-  const secRaw = await env.VAULT.get(K(space, "secret", fresh.secret));
+  const secRaw = await env.VAULT.get(K(space, "secret", card.secret));
   if (!secRaw) return decline("secret missing from vault");
   const sealed = JSON.parse(secRaw);
   let resp, out;
   if (await splitMode(env, space)) {
-    const r = await callLastMile(env, space, "/charge", { secret: sealed, dek: await wrappedDEKFor(env, space, sealed.keyRef), header: fresh.header, header_prefix: fresh.header_prefix, request: { url: req.url, method: req.method || "GET", headers: req.headers || {}, body: req.body } });
+    const r = await callLastMile(env, space, "/charge", { secret: sealed, dek: await wrappedDEKFor(env, space, sealed.keyRef), header: card.header, header_prefix: card.header_prefix, request: { url: req.url, method: req.method || "GET", headers: req.headers || {}, body: req.body } });
     resp = { status: r.status }; out = r.body;
   } else {
     const key = await decrypt(env, space, sealed);
-    const httpResp = await fetch(req.url, { method: req.method || "GET", headers: { ...(req.headers || {}), [fresh.header]: fresh.header_prefix + key }, body: req.body == null ? undefined : typeof req.body === "string" ? req.body : JSON.stringify(req.body) });
+    const httpResp = await fetch(req.url, { method: req.method || "GET", headers: { ...(req.headers || {}), [card.header]: card.header_prefix + key }, body: req.body == null ? undefined : typeof req.body === "string" ? req.body : JSON.stringify(req.body) });
     const text = await httpResp.text();
     try { out = JSON.parse(text); } catch { out = text; }
     resp = { status: httpResp.status };
   }
-  // Commit on the LIVEST record: re-read (a freeze may have landed during the upstream call),
-  // re-check the fences, then bump `used` on THAT record. Never write our pre-call copy back, so a
-  // freeze is never clobbered — at worst one in-flight call slips, and every charge after it stops.
-  const latest = await env.VAULT.get(K(space, "card", card.id), "json");
-  { const blocked = fence(latest); if (blocked) return decline(blocked); }
-  latest.used = (latest.used || 0) + 1;
-  await env.VAULT.put(K(space, "card", card.id), JSON.stringify(latest));
-  // provenance: who charged, where, to what host, and where they're left on the cap.
-  await logEvent(env, space, "card.charge", { id: card.id, holder: latest.holder || null, host, method: req.method || "GET", status: resp.status, used: latest.used, limit: latest.limit ?? null });
-  return { authorized: true, status: resp.status, body: out, card: { id: card.id, used: latest.used, remaining: latest.limit != null ? Math.max(0, latest.limit - latest.used) : null } };
+  await logEvent(env, space, "card.charge", { id, holder: card.holder || null, host, method: req.method || "GET", status: resp.status, used: card.used, limit: card.limit ?? null });
+  return { authorized: true, status: resp.status, body: out, card: { id, used: card.used, remaining: card.limit != null ? Math.max(0, card.limit - card.used) : null } };
 }
 
 export default {
@@ -419,12 +459,9 @@ export default {
         return json({ error: "this space's Fort Card subscription is inactive — the owner must subscribe in the wallet", code: "subscribe_required" }, 402);
       }
       if (path === "/agent/discover") {
-        const cardList = await env.VAULT.list({ prefix: K(aspace, "card", "") });
-        const usable = [];
-        for (const k of cardList.keys) {
-          const c = JSON.parse(await env.VAULT.get(k.name));
-          if (!c.pending && !c.frozen) usable.push({ id: c.id, name: c.name, allowed_hosts: c.allowed_hosts, remaining: c.limit != null ? Math.max(0, c.limit - c.used) : null });
-        }
+        const usable = (await listCardStates(env, aspace))
+          .filter((c) => !c.pending && !c.frozen)
+          .map((c) => ({ id: c.id, name: c.name, allowed_hosts: c.allowed_hosts, remaining: c.limit != null ? Math.max(0, c.limit - c.used) : null }));
         const secPrefix = K(aspace, "secret", "");
         const secList = await env.VAULT.list({ prefix: secPrefix });
         const requestable = secList.keys.map((k) => k.name.slice(secPrefix.length));
@@ -438,12 +475,10 @@ export default {
       if (path === "/agent/use") {
         // Spend a card the owner already approved in this space. An approved card is a BEARER: any
         // agent in this space may charge it — there is no requester-lock on spend. The real controls
-        // live in chargeCard and travel WITH the card: it must be approved (not pending), not frozen,
-        // not expired, under its cap, and the target host must be on its allowed_hosts. Approval +
-        // the owner's wake-back gate getting a NEW card or a recharge — never the act of spending one.
-        const c = await env.VAULT.get(K(aspace, "card", String(b.card)), "json");
-        if (!c) return json({ error: "no such card in this space" }, 404);
-        return json(await chargeCard(env, aspace, c, b.request));
+        // live in the card's DO and travel WITH the card: it must be approved (not pending), not
+        // frozen, not expired, under its cap, and the target host must be on its allowed_hosts.
+        // Approval + the owner's wake-back gate getting a NEW card or a recharge — never a spend.
+        return json(await chargeCard(env, aspace, String(b.card), b.request));
       }
       // /agent/request
       if (!b.secret || !Array.isArray(b.allowed_hosts) || !b.allowed_hosts.length) {
@@ -479,7 +514,8 @@ export default {
         wake: b.pr ? { repo: String(b.repo), pr: Number(b.pr) } : null,
         created: new Date().toISOString(),
       };
-      await env.VAULT.put(K(aspace, "card", rid), JSON.stringify(reqCard));
+      await cardOp(env, aspace, rid, "init", { card: reqCard });
+      await registerCard(env, aspace, rid);
       await logEvent(env, aspace, "card.request", { id: rid, name: reqCard.name, secret: reqCard.secret, allowed_hosts: reqCard.allowed_hosts, limit, repo: b.repo });
       await notifyCardRequest(env, aspace, reqCard);
       const cap = limit == null ? "unlimited charges" : "capped at " + limit + " charge" + (limit > 1 ? "s" : "");
@@ -964,7 +1000,8 @@ export default {
         wake: body.wake && body.wake.repo && body.wake.pr ? { repo: String(body.wake.repo), pr: Number(body.wake.pr) } : null,
         created: new Date().toISOString(),
       };
-      await env.VAULT.put(K(space, "card", id), JSON.stringify(card));
+      await cardOp(env, space, id, "init", { card });
+      await registerCard(env, space, id);
       await logEvent(env, space, pending ? "card.request" : "card.issue", {
         id, name: card.name, secret: card.secret, holder: card.holder, allowed_hosts: card.allowed_hosts, limit: card.limit, pending,
       });
@@ -972,24 +1009,14 @@ export default {
       return json(card);
     }
 
-    // ── list cards (the statement's subjects — never the underlying key) ──
+    // ── list cards (the statement's subjects — never the underlying key). Live state comes from
+    // each card's DO; the KV index just enumerates which cards exist in this space. ──
     if (path === "/cards" && request.method === "GET") {
-      const list = await env.VAULT.list({ prefix: K(space, "card", "") });
-      const cards = [];
-      for (const k of list.keys) {
-        // KV is eventually consistent: right after a revoke, list() can still return the deleted
-        // key while get() already returns null. Skip those (and any unparseable entry) instead of
-        // letting JSON.parse(null) throw and 500 the whole list — that was the post-revoke flakiness.
-        const raw = await env.VAULT.get(k.name);
-        if (!raw) continue;
-        let c;
-        try { c = JSON.parse(raw); } catch { continue; }
-        cards.push({
-          id: c.id, name: c.name, secret: c.secret, holder: c.holder ?? null, allowed_hosts: c.allowed_hosts,
-          limit: c.limit, used: c.used, remaining: c.limit != null ? Math.max(0, c.limit - c.used) : null,
-          expires_at: c.expires_at, frozen: c.frozen, pending: c.pending || false,
-        });
-      }
+      const cards = (await listCardStates(env, space)).map((c) => ({
+        id: c.id, name: c.name, secret: c.secret, holder: c.holder ?? null, allowed_hosts: c.allowed_hosts,
+        limit: c.limit, used: c.used, remaining: c.limit != null ? Math.max(0, c.limit - c.used) : null,
+        expires_at: c.expires_at, frozen: c.frozen, pending: c.pending || false,
+      }));
       return json({ cards });
     }
 
@@ -1027,14 +1054,20 @@ export default {
       });
     }
 
-    // ── /cards/:id  (use · freeze · revoke) ──
+    // ── /cards/:id  (use · freeze · revoke) — live state lives in the card's Durable Object ──
     const m = path.match(/^\/cards\/([^/]+)(\/use|\/freeze)?$/);
     if (m) {
       const id = m[1];
       const sub = m[2];
-      const raw = await env.VAULT.get(K(space, "card", id));
-      if (!raw) return json({ error: "no such card" }, 404);
-      const card = JSON.parse(raw);
+      await migrateSpaceCards(env, space); // ensure a legacy card is in its DO before freeze/revoke/use
+
+      if (sub === "/use" && request.method === "POST") {
+        { const g = requireSub(); if (g) return g; }
+        // The DO atomically fences (pending/frozen/revoked/expired/cap/host) + counts the spend, then
+        // chargeCard injects the key server-side and returns only the response. A decline is still a
+        // line on the statement (chargeCard logs it).
+        return json(await chargeCard(env, space, id, { url: body.url, method: body.method, headers: body.headers, body: body.body }));
+      }
 
       if (sub === "/freeze" && request.method === "POST") {
         const frozen = !!body.frozen;
@@ -1046,73 +1079,20 @@ export default {
           const s = await stepIfSession("card.approve");
           if (s) return s;
         }
-        const approved = !frozen && !!card.pending;
-        card.frozen = frozen;
-        if (!frozen) card.pending = false;
-        await env.VAULT.put(K(space, "card", id), JSON.stringify(card));
+        const before = await cardOp(env, space, id, "status");
+        if (!before) return json({ error: "no such card" }, 404);
+        const approved = !frozen && !!before.pending;
+        const card = await cardOp(env, space, id, "freeze", { frozen }); // atomic in the DO
         await logEvent(env, space, frozen ? "card.freeze" : approved ? "card.approve" : "card.unfreeze", { id });
         if (approved) await wakeRequester(env, space, card); // write back to the agent's branch so it resumes
         return json({ id, frozen: card.frozen, pending: card.pending || false });
       }
+
       if (!sub && request.method === "DELETE") {
-        await env.VAULT.delete(K(space, "card", id));
+        await cardOp(env, space, id, "revoke"); // the DO drops the state; a spend can't bring it back
+        await unregisterCard(env, space, id);
         await logEvent(env, space, "card.revoke", { id });
         return json({ revoked: id });
-      }
-      if (sub === "/use" && request.method === "POST") {
-        { const g = requireSub(); if (g) return g; }
-        // authorize (ISO-8583 in spirit) — a decline is still a line on the statement
-        const decline = async (reason) => {
-          await logEvent(env, space, "card.decline", { id, reason });
-          return json({ authorized: false, decline_reason: reason });
-        };
-        if (card.pending) return decline("card pending owner approval (approve it in the wallet)");
-        if (card.frozen) return decline("card frozen");
-        if (card.expires_at && Date.parse(card.expires_at) < Date.now()) return decline("card expired");
-        if (card.limit != null && card.used >= card.limit) return decline("limit reached");
-        if (!body.url) return decline("request url required");
-        let host;
-        try { host = new URL(body.url).host; } catch { return decline("bad url"); }
-        if (ssrfBlocked(host)) return decline(`host ${host} blocked (SSRF: private/loopback/link-local)`);
-        if (!card.allowed_hosts.includes(host)) return decline(`host ${host} not allowed for this card`);
-
-        // settle: the real key is injected server-side and ONLY the response comes back. In split
-        // mode the control plane never opens the secret — it relays the ciphertext to the owner's
-        // last-mile worker, which decrypts + injects + fetches on the owner's own infra.
-        const secRaw = await env.VAULT.get(K(space, "secret", card.secret));
-        if (!secRaw) return decline("secret missing from vault");
-        const sealed = JSON.parse(secRaw);
-        let resp, out;
-        if (await splitMode(env, space)) {
-          const r = await callLastMile(env, space, "/charge", {
-            secret: sealed,
-            dek: await wrappedDEKFor(env, space, sealed.keyRef),
-            header: card.header,
-            header_prefix: card.header_prefix,
-            request: { url: body.url, method: body.method || "GET", headers: body.headers || {}, body: body.body },
-          });
-          resp = { status: r.status };
-          out = r.body;
-        } else {
-          const key = await decrypt(env, space, sealed);
-          const httpResp = await fetch(body.url, {
-            method: body.method || "GET",
-            headers: { ...(body.headers || {}), [card.header]: card.header_prefix + key }, // credential injected LAST
-            body: body.body == null ? undefined : typeof body.body === "string" ? body.body : JSON.stringify(body.body),
-          });
-          const text = await httpResp.text();
-          try { out = JSON.parse(text); } catch { out = text; }
-          resp = { status: httpResp.status };
-        }
-        card.used++;
-        await env.VAULT.put(K(space, "card", id), JSON.stringify(card));
-        await logEvent(env, space, "card.charge", { id, host, status: resp.status });
-        return json({
-          authorized: true,
-          status: resp.status,
-          body: out,
-          card: { id, used: card.used, remaining: card.limit != null ? Math.max(0, card.limit - card.used) : null },
-        });
       }
     }
 

@@ -493,7 +493,7 @@ async function loadEvents(){try{const ev=(await jget('/events?limit=10')).events
 
 (async()=>{
   let w;try{w=await jget('/whoami')}catch{$('#signin').classList.remove('hide');return regSW()}
-  me=(w.login?w.login+' · ':'')+w.space;$('#who').textContent=me+(w.store?' · store '+String(w.store).slice(0,8):'');
+  me=(w.login?w.login+' · ':'')+w.space;$('#who').textContent=me;
   // The door: on a managed (billed) instance the space must be subscribed before any wallet use.
   // Self-host returns enabled:false → subscribed:true, so this is a no-op there.
   let bill={enabled:false,subscribed:true};try{bill=await jget('/billing/status')}catch{}
