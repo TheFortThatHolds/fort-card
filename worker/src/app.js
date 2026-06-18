@@ -122,14 +122,14 @@ label{font-size:13px;color:#cdc2af;display:block;margin-top:10px}
     <p class="muted" style="margin-bottom:18px">Signed in as <b id="lockwho">…</b></p>
     <button class="btn p" id="unlock" style="font-size:16px;padding:14px 22px">Unlock with your passkey</button>
     <p id="lockmsg" class="muted" style="margin-top:14px"></p>
-    <p class="muted" style="margin:26px auto 0;max-width:460px">Your passkey guards this device and stays on it. GitHub is your sign-in and your recovery: lose this device, sign back in anywhere, re-enable it, and your vault is right there — so a lost device doesn't lock you out.</p>
+    <p class="muted" style="margin:26px auto 0;max-width:460px">Your passkey guards this device and stays on it. GitHub is your sign-in and your recovery: lose this device, sign back in anywhere, re-enable it, and your keys are right there — so a lost device doesn't lock you out.</p>
     <a class="muted" href="/logout" style="display:inline-block;margin-top:16px">Sign out</a>
   </div>
   <div id="gate" class="hide" style="padding:40px 0">
     <div class="hero" style="text-align:left"><h1>Fort <span class="c">Wallet</span></h1><p class="muted">Signed in as <b id="gatewho">…</b></p></div>
     <div class="card" style="margin-top:18px">
       <div class="row"><b style="font-size:18px">Subscription</b><span class="pill warn" id="gateprice">$8 / month</span></div>
-      <p class="muted" style="margin-top:10px">Your own sealed vault: store keys, issue capped cards, approve agent requests from your phone. One price, everything in. Cancel anytime.</p>
+      <p class="muted" style="margin-top:10px">Your own lockbox: store keys on your own Cloudflare, issue capped cards, approve agent requests from your phone. One price, everything in. Cancel anytime.</p>
       <button class="btn p" id="subbtn" style="margin-top:16px;width:100%;font-size:16px;padding:14px">Subscribe</button>
       <p class="muted" style="margin-top:10px">You'll review and accept the terms on the secure checkout page.</p>
       <p id="gatemsg" class="muted" style="margin-top:12px"></p>
@@ -139,7 +139,7 @@ label{font-size:13px;color:#cdc2af;display:block;margin-top:10px}
   <div id="app" class="hide">
     <div class="bar"><div class="id">space <b id="who">…</b></div><a class="btn sm" href="/logout">Sign out</a></div>
 
-    <!-- HOME: approve agent requests, see cards, jump to Vault / Log -->
+    <!-- HOME: approve agent requests, see cards, jump to Lockbox / Log -->
     <div id="view-home">
       <h2>This device</h2>
       <div class="card"><div class="row">
@@ -159,7 +159,7 @@ label{font-size:13px;color:#cdc2af;display:block;margin-top:10px}
 
       <h2>Manage</h2>
       <div class="tiles">
-        <button class="tile" id="tile-vault"><span class="ic">🔑</span><b>Vault</b><span class="muted">Add &amp; roll your keys</span></button>
+        <button class="tile" id="tile-vault"><span class="ic">🔑</span><b>Lockbox</b><span class="muted">Add &amp; roll your keys</span></button>
         <button class="tile" id="tile-log"><span class="ic">📜</span><b>Log</b><span class="muted">What your agents did</span></button>
         <button class="tile" id="tile-data"><span class="ic">🛡️</span><b>Data &amp; privacy</b><span class="muted">Export or delete it all</span></button>
       </div>
@@ -178,23 +178,23 @@ label{font-size:13px;color:#cdc2af;display:block;margin-top:10px}
       </footer>
     </div>
 
-    <!-- VAULT: your keys — add and roll over in place -->
+    <!-- LOCKBOX: your keys — add and roll over in place -->
     <div id="view-vault" class="hide">
       <button class="btn sm back" data-back>← Back</button>
-      <h2>Vault — your keys</h2>
-      <p class="muted" style="margin-bottom:14px">The keys your cards draw on. Add a key, or roll one over in place — every card pointing at it picks up the new value automatically, no re-issuing.</p>
+      <h2>Lockbox — your keys</h2>
+      <p class="muted" style="margin-bottom:14px">The keys your cards draw on, sealed in your own lockbox. Add a key, or roll one over in place — every card pointing at it picks up the new value automatically, no re-issuing.</p>
       <div class="card" id="lmcard">
-        <div id="lmstatus" class="muted">Checking your vault…</div>
+        <div id="lmstatus" class="muted">Checking your lockbox…</div>
         <div id="lmpending" class="hide" style="margin-top:10px">
-          <div class="muted" style="margin-bottom:6px">A vault phoned home and is waiting for your approval:</div>
+          <div class="muted" style="margin-bottom:6px">A lockbox phoned home and is waiting for your approval:</div>
           <div id="lmpendingurl" class="muted" style="word-break:break-all;margin-bottom:8px"></div>
-          <button class="btn p" id="lmapprovebtn">Approve this vault (tap to confirm)</button>
+          <button class="btn p" id="lmapprovebtn">Approve this lockbox (tap to confirm)</button>
           <button class="btn" id="lmrejectbtn" style="margin-top:8px">Reject</button>
         </div>
         <div id="lmconnect" class="hide">
-          <div class="muted" style="margin-bottom:6px">Connect your vault in one tap — we set it up on your own Cloudflare for you:</div>
+          <div class="muted" style="margin-bottom:6px">Connect your lockbox in one tap — we set it up on your own Cloudflare for you:</div>
           <button class="btn p" id="lmcfbtn">⚡ Connect Cloudflare</button>
-          <div class="muted" style="margin-top:8px">You approve once on Cloudflare. We create the vault in <em>your</em> account — nothing to copy, nothing to paste.</div>
+          <div class="muted" style="margin-top:8px">You approve once on Cloudflare. We create the lockbox in <em>your</em> account — nothing to copy, nothing to paste.</div>
           <details style="margin-top:14px">
             <summary class="muted" style="cursor:pointer">Other ways to connect</summary>
             <div class="muted" style="margin:10px 0 6px"><b>Setup code:</b> deploy it yourself, type one code:</div>
@@ -207,8 +207,8 @@ label{font-size:13px;color:#cdc2af;display:block;margin-top:10px}
             </div>
             <div class="muted" style="margin:16px 0 6px"><b>Paste the URL:</b> deploy, then paste the worker URL:</div>
             <a class="btn" href="https://deploy.workers.cloudflare.com/?url=https://github.com/TheFortThatHolds/fort-card-lockbox" target="_blank" rel="noopener">⚡ Deploy to Cloudflare</a>
-            <label style="margin-top:14px">Worker URL<input id="lm_url" placeholder="https://fort-card-last-mile.you.workers.dev"></label>
-            <button class="btn" id="lmconnectbtn" style="margin-top:12px">Connect my vault (tap to confirm)</button>
+            <label style="margin-top:14px">Worker URL<input id="lm_url" placeholder="https://fort-card-lockbox.you.workers.dev"></label>
+            <button class="btn" id="lmconnectbtn" style="margin-top:12px">Connect my lockbox (tap to confirm)</button>
             <div class="muted" style="margin-top:8px">We claim the link for you — no tokens to copy. Your key seals inside <em>your</em> worker; we only ever hold ciphertext.</div>
           </details>
         </div>
@@ -347,22 +347,22 @@ async function load(){
   ]);
   refreshPushState();
 }
-// Store a key. In split (non-custodial) mode the plaintext goes browser → the tenant's OWN
-// last-mile to be sealed there, and the control plane only ever receives ciphertext. Custodial /
-// self-host posts the value to the control plane as before.
+// Store a key. The plaintext goes browser → the customer's OWN lockbox to be sealed there, and the
+// control plane only ever receives ciphertext — it never touches a plaintext key. (The non-lockbox
+// branch only fires on a self-host worker that carries its own MASTER_KEY.)
 async function storeKey(name,value){
   let st={connected:false};try{st=await jget('/lastmile/status')}catch(_){}
   if(st.connected){
     const t=await jget('/lastmile/seal-ticket',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
     const r=await fetch(t.url.replace(/\\/+$/,'')+'/seal',{method:'POST',mode:'cors',headers:{'Content-Type':'application/json','X-Seal-Ticket':t.ticket},body:JSON.stringify({plaintext:value,dek:t.dek})});
     let j={};try{j=await r.json()}catch(_){}
-    if(!r.ok||!j.sealed)throw new Error('seal failed at your last-mile'+(r.status?' ('+r.status+')':''));
+    if(!r.ok||!j.sealed)throw new Error('seal failed at your lockbox'+(r.status?' ('+r.status+')':''));
     await jget('/secrets',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,sealed:j.sealed})});
   }else{
     await jget('/secrets',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,value})});
   }
 }
-// Vault connection state: is this space sealing on the tenant's own last-mile, or not yet?
+// Lockbox connection state: is this space sealing on the customer's own lockbox, or not yet?
 async function refreshLastmile(){
   const el=$('#lmstatus');if(!el)return;
   try{
@@ -373,10 +373,10 @@ async function refreshLastmile(){
       pend&&pend.classList.remove('hide');
     }else{ pend&&pend.classList.add('hide'); }
     if(st.connected){
-      el.innerHTML='<b style="color:#7fae6d">✓ Your vault is connected</b> — keys seal in your own worker.<div class="muted" style="margin-top:4px;word-break:break-all">'+st.url+'</div>';
+      el.innerHTML='<b style="color:#7fae6d">✓ Your lockbox is connected</b> — keys seal in your own worker.<div class="muted" style="margin-top:4px;word-break:break-all">'+st.url+'</div>';
       $('#lmconnect').classList.add('hide');
     }else{
-      el.innerHTML='<b style="color:#e7a85a">No vault connected yet.</b> Connect your last-mile so your keys seal on your own infra — until then there\\'s nowhere to store them.';
+      el.innerHTML='<b style="color:#e7a85a">No lockbox connected yet.</b> Connect your lockbox so your keys seal on your own Cloudflare — until then there\\'s nowhere to store them.';
       $('#lmconnect').classList.remove('hide');
     }
   }catch(_){el.textContent=''}
@@ -512,17 +512,17 @@ function showView(v){['home','vault','log','data'].forEach(n=>{const el=$('#view
 $('#tile-vault')&&($('#tile-vault').onclick=()=>{showView('vault');refreshLastmile()});
 $('#tile-log')&&($('#tile-log').onclick=()=>{showView('log');loadEvents()});
 $('#tile-data')&&($('#tile-data').onclick=()=>{showView('data');$('#eraseconfirm').classList.add('hide')});
-$('#lmconnectbtn')&&($('#lmconnectbtn').onclick=()=>{const u=$('#lm_url').value.trim();if(!u){toast('Paste your last-mile URL');return}act(async()=>{await jget('/lastmile/connect',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:u})});$('#lm_url').value='';await refreshLastmile()},'Vault connected ✓')});
+$('#lmconnectbtn')&&($('#lmconnectbtn').onclick=()=>{const u=$('#lm_url').value.trim();if(!u){toast('Paste your lockbox URL');return}act(async()=>{await jget('/lastmile/connect',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:u})});$('#lm_url').value='';await refreshLastmile()},'Lockbox connected ✓')});
 // Claim-code onboarding: mint a one-time code, show it + the control-plane URL to paste on Cloudflare's deploy screen.
 $('#lmsetupbtn')&&($('#lmsetupbtn').onclick=()=>{act(async()=>{const r=await jget('/lastmile/claim-code',{method:'POST'});const c=$('#lmclaimcode');if(c)c.textContent=r.code;const cp=$('#lmclaimcp');if(cp)cp.textContent=r.control_plane_url;$('#lmclaim').classList.remove('hide')},'Setup code ready — deploy your lockbox')});
-// Approve a vault that phoned home — the passkey tap is the real gate. Promotes pending → connected.
-$('#lmapprovebtn')&&($('#lmapprovebtn').onclick=()=>act(async()=>{await passkeyAssert();await jget('/lastmile/pending/approve',{method:'POST'});await refreshLastmile()},'Vault connected ✓'));
-$('#lmrejectbtn')&&($('#lmrejectbtn').onclick=()=>act(async()=>{await jget('/lastmile/pending/reject',{method:'POST'});await refreshLastmile()},'Pending vault rejected'));
+// Approve a lockbox that phoned home — the passkey tap is the real gate. Promotes pending → connected.
+$('#lmapprovebtn')&&($('#lmapprovebtn').onclick=()=>act(async()=>{await passkeyAssert();await jget('/lastmile/pending/approve',{method:'POST'});await refreshLastmile()},'Lockbox connected ✓'));
+$('#lmrejectbtn')&&($('#lmrejectbtn').onclick=()=>act(async()=>{await jget('/lastmile/pending/reject',{method:'POST'});await refreshLastmile()},'Pending lockbox rejected'));
 // Connect Cloudflare (one-tap): top-level navigation to the OAuth start (carries the session cookie).
 $('#lmcfbtn')&&($('#lmcfbtn').onclick=()=>{location.href='/cloudflare/connect'});
 // Returning from the Cloudflare round-trip: surface the outcome and refresh, then clean the URL.
 (function(){const p=new URLSearchParams(location.search).get('cloudflare');if(!p)return;
-  if(p==='connected')toast('Cloudflare vault connected ✓');
+  if(p==='connected')toast('Cloudflare lockbox connected ✓');
   else toast('Cloudflare connect failed: '+(new URLSearchParams(location.search).get('reason')||'try again'));
   history.replaceState({},'','/app');showView('vault');refreshLastmile()})();
 document.querySelectorAll('[data-back]').forEach(b=>b.onclick=()=>showView('home'));

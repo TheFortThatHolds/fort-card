@@ -1,9 +1,9 @@
-// Seal ticket — a short-TTL, HMAC-signed capability to seal ONE value at the tenant's own
-// last-mile worker. The control plane (which holds the space's relay key) mints it; the last-mile
+// Seal ticket — a short-TTL, HMAC-signed capability to seal ONE value at the customer's own
+// lockbox worker. The control plane (which holds the space's relay key) mints it; the lockbox
 // (which holds the same key as its LAST_MILE_KEY) verifies it. It carries NO secret — it only
-// authorizes a seal, so the plaintext key can travel browser → the tenant's last-mile directly and
+// authorizes a seal, so the plaintext key can travel browser → the customer's lockbox directly and
 // the control plane stays plaintext-blind. The relay key itself binds the ticket to that one
-// last-mile, so the ticket needs no space/tenant field.
+// lockbox, so the ticket needs no space/tenant field.
 const enc = new TextEncoder();
 const b64url = (buf) =>
   btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
