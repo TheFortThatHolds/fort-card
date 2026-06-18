@@ -292,7 +292,6 @@ async function callTool(name, args, env, principal) {
     const secList = await env.VAULT.list({ prefix: secPrefix });
     const requestable_secrets = secList.keys.map((k) => k.name.slice(secPrefix.length));
     return {
-      space,
       usable_cards,
       requestable_secrets,
       pending_cards,
