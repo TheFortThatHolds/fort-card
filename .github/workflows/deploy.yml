@@ -46,7 +46,12 @@ jobs:
       - name: Create or reuse the VAULT KV namespace
         run: |
           set -e
-          id=$($WR kv namespace list 2>/dev/null | jq -r '.[] | select(.title=="fort-card-VAULT") | .id')
+          # wrangler@3 prints a banner ("⛅️ wrangler x.y.z" + a dashed rule) to STDOUT, which broke
+          # jq (it parsed the dashed line as a number → "Invalid numeric literal") and failed the
+          # whole deploy before it ran. Slice out just the JSON array — from the first line starting
+          # with '[' to its closing ']' — before jq, so a banner (or any future preamble) is ignored.
+          raw=$($WR kv namespace list 2>/dev/null || true)
+          id=$(printf '%s\n' "$raw" | sed -n '/^\[/,/^\]/p' | jq -r '.[] | select(.title=="fort-card-VAULT") | .id' 2>/dev/null | head -1)
           if [ -z "$id" ] || [ "$id" = "null" ]; then
             id=$($WR kv namespace create VAULT | grep -oE '[0-9a-f]{32}' | head -1)
           fi
