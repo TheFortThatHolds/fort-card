@@ -65,7 +65,10 @@ jobs:
           CLIENT_ID: ${{ vars.GH_CLIENT_ID }}
           APP_ID: ${{ vars.GH_APP_ID }}
           OP_SPACE: ${{ vars.OPERATOR_SPACE }}
-          CF_CLIENT_ID: ${{ vars.CF_OAUTH_CLIENT_ID }}
+          # Forgiving on purpose: read from the Variables tab OR the Secrets tab. The client id is
+          # non-secret (PKCE), so either is fine — and operators (incl. us) habitually drop it in
+          # Secrets. Whichever is set wins; the deploy doesn't care which tab it landed in.
+          CF_CLIENT_ID: ${{ vars.CF_OAUTH_CLIENT_ID || secrets.CF_OAUTH_CLIENT_ID }}
         run: |
           set -e
           missing=
