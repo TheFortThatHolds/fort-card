@@ -184,12 +184,32 @@ label{font-size:13px;color:#cdc2af;display:block;margin-top:10px}
       <p class="muted" style="margin-bottom:14px">The keys your cards draw on. Add a key, or roll one over in place — every card pointing at it picks up the new value automatically, no re-issuing.</p>
       <div class="card" id="lmcard">
         <div id="lmstatus" class="muted">Checking your vault…</div>
+        <div id="lmpending" class="hide" style="margin-top:10px">
+          <div class="muted" style="margin-bottom:6px">A vault phoned home and is waiting for your approval:</div>
+          <div id="lmpendingurl" class="muted" style="word-break:break-all;margin-bottom:8px"></div>
+          <button class="btn p" id="lmapprovebtn">Approve this vault (tap to confirm)</button>
+          <button class="btn" id="lmrejectbtn" style="margin-top:8px">Reject</button>
+        </div>
         <div id="lmconnect" class="hide">
-          <div class="muted" style="margin-bottom:6px"><b>1.</b> Deploy your lockbox — one click, installs onto your own Cloudflare (it sets up its own keys):</div>
-          <a class="btn" href="https://deploy.workers.cloudflare.com/?url=https://github.com/TheFortThatHolds/fort-card/tree/main/last-mile" target="_blank" rel="noopener">⚡ Deploy to Cloudflare</a>
-          <label style="margin-top:14px"><b>2.</b> Paste the worker URL it gives you<input id="lm_url" placeholder="https://fort-card-last-mile.you.workers.dev"></label>
-          <button class="btn p" id="lmconnectbtn" style="margin-top:12px"><b>3.</b> Connect my vault (tap to confirm)</button>
-          <div class="muted" style="margin-top:8px">We claim the link for you — no tokens to copy. Your key seals inside <em>your</em> worker; we only ever hold ciphertext.</div>
+          <div class="muted" style="margin-bottom:6px">Connect your vault in one tap — we set it up on your own Cloudflare for you:</div>
+          <button class="btn p" id="lmcfbtn">⚡ Connect Cloudflare</button>
+          <div class="muted" style="margin-top:8px">You approve once on Cloudflare. We create the vault in <em>your</em> account — nothing to copy, nothing to paste.</div>
+          <details style="margin-top:14px">
+            <summary class="muted" style="cursor:pointer">Other ways to connect</summary>
+            <div class="muted" style="margin:10px 0 6px"><b>Setup code:</b> deploy it yourself, type one code:</div>
+            <button class="btn" id="lmsetupbtn">Get a setup code</button>
+            <div id="lmclaim" class="hide" style="margin-top:10px">
+              <div class="muted" style="margin:4px 0">Setup code: <b id="lmclaimcode" style="font-family:monospace;letter-spacing:1px"></b></div>
+              <div class="muted" style="margin:4px 0;word-break:break-all">Control plane: <b id="lmclaimcp"></b></div>
+              <a class="btn" href="https://deploy.workers.cloudflare.com/?url=https://github.com/TheFortThatHolds/fort-card-lockbox" target="_blank" rel="noopener" style="margin-top:8px">⚡ Deploy to Cloudflare</a>
+              <div class="muted" style="margin-top:8px">Paste both on Cloudflare's deploy screen. The lockbox phones home and appears above to approve. Code expires in ~30 min.</div>
+            </div>
+            <div class="muted" style="margin:16px 0 6px"><b>Paste the URL:</b> deploy, then paste the worker URL:</div>
+            <a class="btn" href="https://deploy.workers.cloudflare.com/?url=https://github.com/TheFortThatHolds/fort-card-lockbox" target="_blank" rel="noopener">⚡ Deploy to Cloudflare</a>
+            <label style="margin-top:14px">Worker URL<input id="lm_url" placeholder="https://fort-card-last-mile.you.workers.dev"></label>
+            <button class="btn" id="lmconnectbtn" style="margin-top:12px">Connect my vault (tap to confirm)</button>
+            <div class="muted" style="margin-top:8px">We claim the link for you — no tokens to copy. Your key seals inside <em>your</em> worker; we only ever hold ciphertext.</div>
+          </details>
         </div>
       </div>
       <div id="secrets"><div class="muted">Loading…</div></div>
@@ -312,6 +332,11 @@ async function refreshLastmile(){
   const el=$('#lmstatus');if(!el)return;
   try{
     const st=await jget('/lastmile/status');
+    const pend=$('#lmpending');
+    if(st.pending && !st.connected){
+      const pu=$('#lmpendingurl');if(pu)pu.textContent=st.pending;
+      pend&&pend.classList.remove('hide');
+    }else{ pend&&pend.classList.add('hide'); }
     if(st.connected){
       el.innerHTML='<b style="color:#7fae6d">✓ Your vault is connected</b> — keys seal in your own worker.<div class="muted" style="margin-top:4px;word-break:break-all">'+st.url+'</div>';
       $('#lmconnect').classList.add('hide');
@@ -436,6 +461,18 @@ function showView(v){['home','vault','log'].forEach(n=>{const el=$('#view-'+n);i
 $('#tile-vault')&&($('#tile-vault').onclick=()=>{showView('vault');refreshLastmile()});
 $('#tile-log')&&($('#tile-log').onclick=()=>{showView('log');loadEvents()});
 $('#lmconnectbtn')&&($('#lmconnectbtn').onclick=()=>{const u=$('#lm_url').value.trim();if(!u){toast('Paste your last-mile URL');return}act(async()=>{await jget('/lastmile/connect',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:u})});$('#lm_url').value='';await refreshLastmile()},'Vault connected ✓')});
+// Claim-code onboarding: mint a one-time code, show it + the control-plane URL to paste on Cloudflare's deploy screen.
+$('#lmsetupbtn')&&($('#lmsetupbtn').onclick=()=>{act(async()=>{const r=await jget('/lastmile/claim-code',{method:'POST'});const c=$('#lmclaimcode');if(c)c.textContent=r.code;const cp=$('#lmclaimcp');if(cp)cp.textContent=r.control_plane_url;$('#lmclaim').classList.remove('hide')},'Setup code ready — deploy your lockbox')});
+// Approve a vault that phoned home — the passkey tap is the real gate. Promotes pending → connected.
+$('#lmapprovebtn')&&($('#lmapprovebtn').onclick=()=>act(async()=>{await passkeyAssert();await jget('/lastmile/pending/approve',{method:'POST'});await refreshLastmile()},'Vault connected ✓'));
+$('#lmrejectbtn')&&($('#lmrejectbtn').onclick=()=>act(async()=>{await jget('/lastmile/pending/reject',{method:'POST'});await refreshLastmile()},'Pending vault rejected'));
+// Connect Cloudflare (one-tap): top-level navigation to the OAuth start (carries the session cookie).
+$('#lmcfbtn')&&($('#lmcfbtn').onclick=()=>{location.href='/cloudflare/connect'});
+// Returning from the Cloudflare round-trip: surface the outcome and refresh, then clean the URL.
+(function(){const p=new URLSearchParams(location.search).get('cloudflare');if(!p)return;
+  if(p==='connected')toast('Cloudflare vault connected ✓');
+  else toast('Cloudflare connect failed: '+(new URLSearchParams(location.search).get('reason')||'try again'));
+  history.replaceState({},'','/app');showView('vault');refreshLastmile()})();
 document.querySelectorAll('[data-back]').forEach(b=>b.onclick=()=>showView('home'));
 
 // ── the log: a human-readable type plus the detail the ledger already records ──

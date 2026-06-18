@@ -35,3 +35,11 @@ jobs:
         run: node test/github-app.test.mjs
       - name: Stripe billing
         run: node test/stripe.test.mjs
+      - name: Last-mile routing
+        run: node test/lastmile.test.mjs
+      - name: Seal ticket
+        run: node test/ticket.test.mjs
+      - name: Claim codes
+        run: node test/claim.test.mjs
+      - name: Connect Cloudflare (OAuth + provisioning)
+        run: node test/cloudflare.test.mjs
