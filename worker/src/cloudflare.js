@@ -34,13 +34,15 @@ export const DEFAULT_AUTHORIZE_URL = "https://dash.cloudflare.com/oauth2/auth";
 export const DEFAULT_TOKEN_URL = "https://dash.cloudflare.com/oauth2/token";
 
 // Cloudflare's consent form needs the exact scopes being granted — sending NONE makes the consent
-// page error ("An unexpected error occurred during the authorization process"), and even if it
-// didn't, the access token couldn't create the KV / upload the lockbox / flip on workers.dev. These
-// are the canonical Workers OAuth scopes (the same family `wrangler login` requests): account:read
-// to find the account, workers_scripts/kv/routes:write to deploy the lockbox + its workers.dev URL,
-// offline_access so the grant can be refreshed. Env-overridable for instances that scope tighter.
+// page error, and the requested scopes must be a SUBSET of the ones registered on the OAuth client
+// (a stray scope → `invalid_scope`). So this is the tight set the provisioning actually needs, all
+// canonical Cloudflare API-token-style permissions (the same vocabulary you pick in the client's
+// scope list): account:read to find the account, workers_kv_storage:write to create the KV,
+// workers_scripts:write to upload the lockbox + flip on its workers.dev route. NO offline_access —
+// that's an OIDC refresh concept, not a Cloudflare scope, and one-shot provisioning never refreshes.
+// Env-overridable (CF_OAUTH_SCOPES) so an instance can match whatever its client registered.
 export const DEFAULT_SCOPES =
-  "account:read user:read workers:write workers_scripts:write workers_kv_storage:write workers_routes:write offline_access";
+  "account:read workers_kv_storage:write workers_scripts:write";
 export async function discover(env) {
   return {
     authorization_endpoint: env.CF_OAUTH_AUTHORIZE_URL || DEFAULT_AUTHORIZE_URL,
