@@ -85,10 +85,21 @@ function mockFetch(routes) {
     await okThrow(() => firstAccountId("AT", mockFetch([["/accounts", { json: { success: true, result: [] } }]])), "throws when no account");
   }
 
-  // 6. create KV returns the namespace id
+  // 6. create KV returns the namespace id (none existing → create)
   {
-    const f = mockFetch([["/storage/kv/namespaces", { json: { success: true, result: { id: "kv789" } } }]]);
-    ok((await createKvNamespace("AT", "acct", "fort-card-lockbox", f)) === "kv789", "createKvNamespace returns id");
+    const f = mockFetch([["/storage/kv/namespaces", (url, init) => init.method === "POST"
+      ? { json: { success: true, result: { id: "kv789" } } }
+      : { json: { success: true, result: [] } }]]);
+    ok((await createKvNamespace("AT", "acct", "fort-card-lockbox", f)) === "kv789", "createKvNamespace creates + returns id when none exists");
+  }
+
+  // 6b. idempotent retry: a namespace with this title already exists → reuse it, no POST
+  {
+    const f = mockFetch([["/storage/kv/namespaces", (url, init) => init.method === "POST"
+      ? { json: { success: true, result: { id: "kvNEW" } } }
+      : { json: { success: true, result: [{ id: "other", title: "something-else" }, { id: "kvExisting", title: "fort-card-lockbox" }] } }]]);
+    ok((await createKvNamespace("AT", "acct", "fort-card-lockbox", f)) === "kvExisting", "createKvNamespace reuses the existing namespace by title");
+    ok(!f.calls.some((c) => c.init.method === "POST"), "no POST when the namespace already exists (retry-safe)");
   }
 
   // 7. upload binds KV as LM and uploads worker.js as a module
