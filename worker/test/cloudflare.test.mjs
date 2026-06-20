@@ -110,6 +110,19 @@ function mockFetch(routes) {
     ok((await enableWorkersDev("AT", "acct", "fort-card-lockbox", f)) === "https://fort-card-lockbox.jimmy.workers.dev", "builds workers.dev url");
   }
 
+  // 8b. fresh account has NO workers.dev subdomain → we create one, then build the url from it
+  {
+    const f = mockFetch([
+      ["/workers/subdomain", (url, init) => init.method === "PUT"
+        ? { json: { success: true, result: { subdomain: "fcnewacct" } } }   // create succeeds
+        : { json: { success: true, result: { subdomain: null } } }],         // none yet on GET
+      ["/subdomain", { json: { success: true, result: {} } }],               // script route enable
+    ]);
+    const url = await enableWorkersDev("AT", "acct", "fort-card-lockbox", f);
+    ok(url === "https://fort-card-lockbox.fcnewacct.workers.dev", "creates a subdomain on a fresh account, then builds the url");
+    ok(f.calls.some((c) => c.url.includes("/workers/subdomain") && c.init.method === "PUT"), "PUT creates the account workers.dev subdomain");
+  }
+
   // 9. lockbox source must look like a module
   {
     ok((await fetchLockboxSource({}, mockFetch([["raw.githubusercontent", { text: "export default { async fetch(){} }" }]]))).includes("export default"), "fetches valid source");
