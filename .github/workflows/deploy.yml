@@ -85,6 +85,9 @@ jobs:
           # non-secret (PKCE), so either is fine — and operators (incl. us) habitually drop it in
           # Secrets. Whichever is set wins; the deploy doesn't care which tab it landed in.
           CF_CLIENT_ID: ${{ vars.CF_OAUTH_CLIENT_ID || secrets.CF_OAUTH_CLIENT_ID }}
+          # Optional marketing site shown at the bare root for browsers (machines still get JSON).
+          # Operator config — non-secret URL, with our managed instance's value as the fallback.
+          LANDING_URL: ${{ vars.LANDING_URL || 'https://fort-card-site.thefortthatholds.workers.dev' }}
         run: |
           set -e
           missing=
@@ -112,6 +115,7 @@ jobs:
             echo "SUBSCRIPTION_PRICE_CENTS = \"800\""
             echo "SUBSCRIPTION_CURRENCY = \"usd\""
             echo "SUBSCRIPTION_PRODUCT_NAME = \"Fort Card\""
+            echo "LANDING_URL = \"$LANDING_URL\""
           } >> wrangler.toml
           # Optional: Connect Cloudflare one-tap onboarding. Non-secret (PKCE public client), so it's
           # an Actions Variable, not a secret. If unset, the /cloudflare/connect route returns 503 and
