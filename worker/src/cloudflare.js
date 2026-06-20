@@ -106,6 +106,15 @@ export async function firstAccountId(token, fetchImpl = fetch) {
 }
 
 export async function createKvNamespace(token, accountId, title, fetchImpl = fetch) {
+  // Idempotent (matches deploy.yml's "create or reuse"): a retried connect — after ANY partial
+  // failure on a first attempt (e.g. the workers.dev-subdomain stop) — must not die on "a namespace
+  // with this account ID and title already exists". Reuse the namespace with this title if present,
+  // otherwise create it.
+  const existing = await cfApi(token, "/accounts/" + accountId + "/storage/kv/namespaces?per_page=100", {}, fetchImpl).catch(() => null);
+  if (Array.isArray(existing)) {
+    const hit = existing.find((n) => n && n.title === title);
+    if (hit && hit.id) return hit.id;
+  }
   const res = await cfApi(token, "/accounts/" + accountId + "/storage/kv/namespaces", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
