@@ -187,3 +187,44 @@ export async function fetchLockboxSource(env, fetchImpl = fetch) {
   if (!/export\s+default/.test(src)) throw new Error("fetched lockbox source looks wrong");
   return src;
 }
+
+// ── Claim the lockbox's one-time relay token off its /bootstrap, server-to-server. A brand-new
+// workers.dev subdomain can take ~30s to be reachable, so poll with backoff (default ~40s) rather
+// than the old ~9s that lost the race on a fresh account. Returns {key} on success, {gone:true} if
+// the lockbox reports the token was ALREADY claimed (a prior attempt spent the one-time token —
+// the caller should un-seal and reclaim), or {} on timeout (not reachable yet → retry connect). ──
+export async function claimLockbox(lockboxUrl, opts = {}, fetchImpl = fetch) {
+  const attempts = opts.attempts ?? 20;
+  const delayMs = opts.delayMs ?? 2000;
+  const sleep = opts.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
+  for (let i = 0; i < attempts; i++) {
+    try {
+      const r = await fetchImpl(lockboxUrl + "/bootstrap", { headers: { "User-Agent": "fort-card-control-plane" } });
+      if (r.status === 410) return { gone: true }; // already claimed (one-time) → poisoned
+      const c = await r.json().catch(() => ({}));
+      if (r.ok && c && c.last_mile_key) return { key: String(c.last_mile_key) };
+    } catch { /* not reachable yet — keep polling */ }
+    if (i < attempts - 1) await sleep(delayMs);
+  }
+  return {};
+}
+
+// Un-seal a spent one-time bootstrap so a stuck half-connect can self-heal. The lockbox seals
+// /bootstrap by setting a KV key "bootstrap:sealed"; our OAuth grant carries workers-kv-storage.write,
+// so we delete that key directly. The lockbox keeps its already-minted keys — only the one-time gate
+// reopens, so the next claim can read the relay token again.
+export async function unsealBootstrap(token, accountId, nsId, fetchImpl = fetch) {
+  await cfApi(token, "/accounts/" + accountId + "/storage/kv/namespaces/" + nsId + "/values/bootstrap%3Asealed", { method: "DELETE" }, fetchImpl);
+}
+
+// Map a raw Cloudflare/connect error to a clear, actionable message for the wallet toast — so a
+// stale OAuth token reads as "re-authorize" and a propagation timeout reads as "wait + retry",
+// instead of a raw API string. Anything unrecognized passes through unchanged.
+export function friendlyCfError(message) {
+  const m = String(message || "");
+  if (/authentication error|invalid.*(token|credential)|unauthor|\b401\b|\b403\b|expired token/i.test(m))
+    return "your Cloudflare authorization expired or was declined — tap Connect Cloudflare again";
+  if (/LOCKBOX_CLAIM_TIMEOUT/.test(m))
+    return "your lockbox deployed but isn't reachable yet (new subdomains take a moment) — tap Connect Cloudflare again";
+  return m;
+}

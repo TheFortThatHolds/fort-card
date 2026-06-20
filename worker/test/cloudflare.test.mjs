@@ -3,6 +3,7 @@
 import {
   generatePkce, discover, DEFAULT_AUTHORIZE_URL, DEFAULT_TOKEN_URL, DEFAULT_SCOPES, buildAuthorizeUrl, exchangeCode,
   firstAccountId, createKvNamespace, uploadLockbox, enableWorkersDev, fetchLockboxSource,
+  claimLockbox, unsealBootstrap, friendlyCfError,
 } from "../src/cloudflare.js";
 
 let pass = 0, fail = 0;
@@ -138,6 +139,43 @@ function mockFetch(routes) {
   {
     ok((await fetchLockboxSource({}, mockFetch([["raw.githubusercontent", { text: "export default { async fetch(){} }" }]]))).includes("export default"), "fetches valid source");
     await okThrow(() => fetchLockboxSource({}, mockFetch([["raw.githubusercontent", { text: "not a worker" }]])), "throws on bogus source");
+  }
+
+  // 10. claimLockbox: returns the relay key when /bootstrap serves it
+  {
+    const f = mockFetch([["/bootstrap", { status: 200, json: { last_mile_key: "LMK123" } }]]);
+    const r = await claimLockbox("https://lb.workers.dev", { attempts: 3, delayMs: 0, sleep: async () => {} }, f);
+    ok(r.key === "LMK123", "claimLockbox returns the relay key on success");
+  }
+
+  // 10b. claimLockbox: a spent one-time token (410) reports gone (caller should un-seal + reclaim)
+  {
+    const f = mockFetch([["/bootstrap", { status: 410, json: { error: "bootstrap already claimed (one-time)" } }]]);
+    const r = await claimLockbox("https://lb.workers.dev", { attempts: 3, delayMs: 0, sleep: async () => {} }, f);
+    ok(r.gone === true && !r.key, "claimLockbox reports gone on 410 (already claimed)");
+  }
+
+  // 10c. claimLockbox: not reachable yet → polls then times out to {} (caller retries connect)
+  {
+    let n = 0;
+    const f = mockFetch([["/bootstrap", () => { n++; return { status: 522, json: {} }; }]]);
+    const r = await claimLockbox("https://lb.workers.dev", { attempts: 4, delayMs: 0, sleep: async () => {} }, f);
+    ok(!r.key && !r.gone && n === 4, "claimLockbox polls the full window, then returns empty on timeout");
+  }
+
+  // 11. unsealBootstrap deletes the lockbox's one-time seal flag via the KV value API
+  {
+    let seen;
+    const f = mockFetch([["/storage/kv/namespaces/", (url, init) => { seen = { url, method: init.method }; return { json: { success: true, result: null } }; }]]);
+    await unsealBootstrap("AT", "acct", "ns123", f);
+    ok(seen.method === "DELETE" && seen.url.includes("/values/bootstrap%3Asealed"), "unsealBootstrap DELETEs the bootstrap:sealed KV key");
+  }
+
+  // 12. friendlyCfError maps the rough edges to actionable text, passes the rest through
+  {
+    ok(/Connect Cloudflare again/.test(friendlyCfError("cloudflare api /accounts/x failed: Authentication error")), "auth error → re-authorize message");
+    ok(/isn't reachable yet|reachable yet/.test(friendlyCfError("LOCKBOX_CLAIM_TIMEOUT")), "claim timeout → wait + retry message");
+    ok(friendlyCfError("something odd") === "something odd", "unknown errors pass through unchanged");
   }
 
   console.log(`\ncloudflare: ${pass} passed, ${fail} failed`);
