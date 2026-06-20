@@ -1119,25 +1119,24 @@ export default {
         const kvId = await cf.createKvNamespace(tok.access_token, accountId, scriptName);
         await cf.uploadLockbox(tok.access_token, accountId, scriptName, source, kvId);
         const lockboxUrl = await cf.enableWorkersDev(tok.access_token, accountId, scriptName);
-        // Claim the relay token from the lockbox we just deployed (server-to-server /bootstrap),
-        // retrying briefly while the new worker propagates. We never hold its MASTER_KEY.
-        let key = null;
-        for (let i = 0; i < 6 && !key; i++) {
-          try {
-            const r = await fetch(lockboxUrl + "/bootstrap", { headers: { "User-Agent": "fort-card-control-plane" } });
-            const c = await r.json().catch(() => ({}));
-            if (r.ok && c.last_mile_key) key = String(c.last_mile_key);
-          } catch {}
-          if (!key) await new Promise((res) => setTimeout(res, 1500));
+        // Claim the relay token from the lockbox we just deployed (server-to-server /bootstrap).
+        // claimLockbox polls with backoff (~40s) so a brand-new subdomain has time to go live. We
+        // never hold its MASTER_KEY. If the one-time token was already spent by an earlier failed
+        // attempt (gone), un-seal it and reclaim once so a stuck half-connect self-heals.
+        let claim = await cf.claimLockbox(lockboxUrl);
+        if (claim.gone) {
+          await cf.unsealBootstrap(tok.access_token, accountId, kvId);
+          claim = await cf.claimLockbox(lockboxUrl);
         }
-        if (!key) throw new Error("deployed the lockbox but couldn't claim its connection yet — open the wallet and retry connect");
-        await env.VAULT.put(K(ps, "lastmile", "config"), JSON.stringify({ url: lockboxUrl, key }));
+        if (!claim.key) throw new Error("LOCKBOX_CLAIM_TIMEOUT");
+        await env.VAULT.put(K(ps, "lastmile", "config"), JSON.stringify({ url: lockboxUrl, key: claim.key }));
         await env.VAULT.delete(K(ps, "lastmile", "pending"));
         await logEvent(env, ps, "lastmile.connect", { url: lockboxUrl, via: "cloudflare-oauth" }); // url only
         return back("cloudflare=connected");
       } catch (e) {
-        await logEvent(env, ps, "lastmile.cloudflare_error", { error: (e && e.message) || "failed" });
-        return back("cloudflare=error&reason=" + encodeURIComponent((e && e.message) || "failed"));
+        const raw = (e && e.message) || "failed";
+        await logEvent(env, ps, "lastmile.cloudflare_error", { error: raw });
+        return back("cloudflare=error&reason=" + encodeURIComponent(cf.friendlyCfError(raw)));
       }
     }
     if (path === "/lastmile/disconnect" && request.method === "POST") {
