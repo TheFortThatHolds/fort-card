@@ -579,6 +579,19 @@ export default {
     const url = new URL(request.url);
     const path = url.pathname.replace(/\/+$/, "") || "/";
 
+    // The bare root: a BROWSER gets the marketing site (reverse-proxied from LANDING_URL so it stays
+    // on this domain); machines / agents / monitors get the JSON identity below. /assets/* proxies
+    // through too so the page's images resolve here. LANDING_URL is operator config injected at
+    // deploy — a fork without it simply serves the JSON. Fail-safe: any proxy hiccup falls through.
+    if (env.LANDING_URL && request.method === "GET" && (path === "/" || path.startsWith("/assets/"))) {
+      const wantsHtml = (request.headers.get("accept") || "").includes("text/html");
+      if (path !== "/" || wantsHtml) {
+        try {
+          const r = await fetch(env.LANDING_URL.replace(/\/+$/, "") + path, { headers: { "user-agent": "fort-card-edge" } });
+          if (r.ok) return r;
+        } catch { /* fall through to the JSON / normal handling */ }
+      }
+    }
     if (path === "/") return json({ name: "fort-card", ok: true, docs: "https://github.com/TheFortThatHolds/fort-card" });
 
     // ── DATA RIGHTS via a SIGNED LINK (works while LOCKED OUT — e.g. after a lapse, from the email).
