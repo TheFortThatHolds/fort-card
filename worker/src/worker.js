@@ -65,7 +65,7 @@ import * as cf from "./cloudflare.js";
 import { pushToOwner, addSubscription, removeSubscription, vapidPublicKey, listSubscriptions } from "./push.js";
 import { postComment, appConfigured, getInstallationOwner } from "./github-app.js";
 import { isSubscribed, createCheckout, confirmCheckout, priceCents, billingSummary, cancelSubscription, resumeSubscription, listBilledSpaces, getBilling, putBilling, clearBillingIndex } from "./stripe.js";
-import { sendWelcomeEmail, sendCancelEmail, sendResumeEmail, sendLapseEmail, sendPurgeReminderEmail, emailConfigured } from "./email.js";
+import { sendWelcomeEmail, sendSignupAlert, sendCancelEmail, sendResumeEmail, sendLapseEmail, sendPurgeReminderEmail, emailConfigured } from "./email.js";
 import { handleConnect } from "./connect.js";
 import { CardState } from "./cardstate.js";
 import { OnceGate } from "./oncegate.js";
@@ -823,6 +823,12 @@ export default {
         if (r.subscribed && r.firstActivation && emailConfigured(env)) {
           const mail = await sendWelcomeEmail(env, { to: r.email, space, origin: url.origin });
           await logEvent(env, space, "billing.welcome_email", mail);
+          // Operator alert: ping the operator on a new signup (SIGNUP_ALERT_EMAIL is operator config;
+          // unset = silent). Best-effort — never fails the confirm. Mute later by clearing the var.
+          if (env.SIGNUP_ALERT_EMAIL) {
+            const alert = await sendSignupAlert(env, { to: env.SIGNUP_ALERT_EMAIL, space, origin: url.origin });
+            await logEvent(env, space, "billing.signup_alert", alert);
+          }
         }
         return json(r);
       } catch (e) {

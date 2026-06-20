@@ -42,6 +42,21 @@ async function send(env, { to, subject, heading, bodyHtml, bodyText }) {
 
 const btn = (href, label) => `<p style="margin:0 0 18px"><a href="${ESC(href)}" style="display:inline-block;background:#d9943f;color:#1d1812;text-decoration:none;font-weight:600;padding:12px 20px;border-radius:10px">${label}</a></p>`;
 
+// Operator alert: ping the operator's inbox (env.SIGNUP_ALERT_EMAIL) when a new space activates a
+// subscription. Best-effort like the rest. Operator config — a fork without SIGNUP_ALERT_EMAIL set
+// never sends, and the operator's address is never committed (injected at deploy).
+export function sendSignupAlert(env, { to, space, origin }) {
+  return send(env, {
+    to,
+    subject: "🎉 New Fort Card subscriber",
+    heading: "New subscriber",
+    bodyHtml: `<p style="margin:0 0 14px">A new space just subscribed to Fort Card:</p>
+  <p style="margin:0 0 18px;font-weight:600">${ESC(space)}</p>
+  ${btn(origin + "/app", "Open the wallet")}`,
+    bodyText: `New Fort Card subscriber: ${space}\n${origin}/app`,
+  });
+}
+
 // Welcome + thank-you on a new subscription. The one-tap cancel path (the wallet /app) is in the very
 // first email, so the cancellation route is never hidden.
 export function sendWelcomeEmail(env, { to, space, origin }) {
