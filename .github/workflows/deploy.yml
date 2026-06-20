@@ -88,6 +88,9 @@ jobs:
           # Optional marketing site shown at the bare root for browsers (machines still get JSON).
           # Operator config — non-secret URL, with our managed instance's value as the fallback.
           LANDING_URL: ${{ vars.LANDING_URL || 'https://fort-card-site.thefortthatholds.workers.dev' }}
+          # Optional: email the operator on each new subscriber. The operator's inbox — an Actions
+          # Variable so it's never committed; unset = no signup alerts.
+          SIGNUP_ALERT_EMAIL: ${{ vars.SIGNUP_ALERT_EMAIL }}
         run: |
           set -e
           missing=
@@ -125,6 +128,14 @@ jobs:
             echo "Connect Cloudflare enabled (CF_OAUTH_CLIENT_ID set)."
           else
             echo "CF_OAUTH_CLIENT_ID not set — Connect Cloudflare onboarding stays off (claim-code/paste-URL still work)."
+          fi
+          # Optional: new-subscriber email alerts. Only injected when set, so the operator's address is
+          # never committed and a fork stays silent. Mute later by clearing the Variable.
+          if [ -n "$SIGNUP_ALERT_EMAIL" ]; then
+            echo "SIGNUP_ALERT_EMAIL = \"$SIGNUP_ALERT_EMAIL\"" >> wrangler.toml
+            echo "New-subscriber alerts ON -> $SIGNUP_ALERT_EMAIL"
+          else
+            echo "SIGNUP_ALERT_EMAIL not set — new-subscriber alerts off."
           fi
           echo "Operator instance config injected for $DOMAIN."
 
