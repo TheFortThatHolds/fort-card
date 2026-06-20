@@ -128,16 +128,44 @@ export async function uploadLockbox(token, accountId, scriptName, source, kvName
   await cfApi(token, "/accounts/" + accountId + "/workers/scripts/" + scriptName, { method: "PUT", body: form }, fetchImpl);
 }
 
+// A brand-new Cloudflare account has NO account-level workers.dev subdomain until the owner first
+// opens Workers & Pages in the dashboard — so enabling the script's route dead-ends for exactly the
+// new customers this one-tap is built for ("You do not have a workers.dev subdomain"). Our OAuth
+// grant carries workers-scripts.write, which also covers the account subdomain, so create one
+// ourselves. The name is just plumbing (the lockbox URL is internal), so derive a likely-unique
+// one from the account id and fall back to a randomized variant on the rare global collision.
+export async function ensureAccountSubdomain(token, accountId, fetchImpl = fetch) {
+  const existing = await cfApi(token, "/accounts/" + accountId + "/workers/subdomain", {}, fetchImpl).catch(() => null);
+  if (existing && existing.subdomain) return existing.subdomain;
+  const base = "fc" + String(accountId).toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 18);
+  let lastErr;
+  for (let i = 0; i < 4; i++) {
+    const name = i === 0 ? base : base.slice(0, 14) + Math.random().toString(36).slice(2, 8);
+    try {
+      const res = await cfApi(token, "/accounts/" + accountId + "/workers/subdomain", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ subdomain: name }),
+      }, fetchImpl);
+      return (res && res.subdomain) || name;
+    } catch (e) {
+      lastErr = e; // taken / invalid → try a randomized variant
+    }
+  }
+  throw new Error("could not create a workers.dev subdomain: " + ((lastErr && lastErr.message) || "failed"));
+}
+
 // Turn on the script's workers.dev route and compute its public URL.
 export async function enableWorkersDev(token, accountId, scriptName, fetchImpl = fetch) {
+  // Make sure the account actually has a workers.dev subdomain first (fresh accounts don't), or the
+  // enable call below fails for every brand-new customer.
+  const subdomain = await ensureAccountSubdomain(token, accountId, fetchImpl);
   await cfApi(token, "/accounts/" + accountId + "/workers/scripts/" + scriptName + "/subdomain", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ enabled: true }),
   }, fetchImpl);
-  const sub = await cfApi(token, "/accounts/" + accountId + "/workers/subdomain", {}, fetchImpl);
-  if (!sub || !sub.subdomain) throw new Error("could not resolve workers.dev subdomain");
-  return "https://" + scriptName + "." + sub.subdomain + ".workers.dev";
+  return "https://" + scriptName + "." + subdomain + ".workers.dev";
 }
 
 // Fetch the canonical lockbox source from the published public repo (single source of truth).
