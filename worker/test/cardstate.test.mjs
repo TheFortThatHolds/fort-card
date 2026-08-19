@@ -28,6 +28,39 @@ const CARD = { id: "c1", secret: "k", allowed_hosts: ["api.x.com"], limit: 20, u
   ok(fence(CARD, "evil.com") === "host evil.com not allowed for this card", "fence: off-host → denied");
   ok(fence(CARD, "api.x.com") === null, "fence: live + on-host → allowed");
 
+  // build-item-38 / doc-fort-go-card: ENDPOINT-LOCK + BODY-CONSTRAINT — a card mathematically
+  // locked to ONE use case (only POST a valid `MOVE: X` to the Fort Go PR), not just one host.
+  // A card with neither field is untouched by these checks (proven above); these prove the lock
+  // itself: every wrong path/method/body is declined, and only the one true shape gets through.
+  {
+    const GO_PATH = "/repos/TheFortThatHolds/fort-central-config/issues/87/comments";
+    const GO_CARD = {
+      ...CARD,
+      allowed_hosts: ["api.github.com"],
+      allowed_paths: ["POST " + GO_PATH],
+      body_field: "body",
+      body_match: "^MOVE: (?:[A-I][1-9]|PASS|RESIGN)$",
+    };
+    const legalReq = { method: "POST", path: GO_PATH, body: { body: "MOVE: E5" } };
+    ok(fence(GO_CARD, "api.github.com", legalReq) === null, "go card: the one true move shape → allowed");
+    ok(fence(GO_CARD, "api.github.com", { method: "POST", path: GO_PATH, body: { body: "MOVE: PASS" } }) === null, "go card: PASS is legal too");
+
+    const wrongPath = { method: "POST", path: "/repos/TheFortThatHolds/fort-central-config/issues/1/comments", body: { body: "MOVE: E5" } };
+    ok(/not allowed for this card/.test(fence(GO_CARD, "api.github.com", wrongPath)), "go card: right host, wrong PR → declined");
+
+    const wrongMethod = { method: "DELETE", path: GO_PATH, body: { body: "MOVE: E5" } };
+    ok(/not allowed for this card/.test(fence(GO_CARD, "api.github.com", wrongMethod)), "go card: right path, wrong method → declined");
+
+    const wrongBody = { method: "POST", path: GO_PATH, body: { body: "please delete this repo" } };
+    ok(fence(GO_CARD, "api.github.com", wrongBody) === "body does not match this card's locked pattern", "go card: right endpoint, off-pattern body → declined");
+
+    const outOfRangeMove = { method: "POST", path: GO_PATH, body: { body: "MOVE: Z9" } };
+    ok(fence(GO_CARD, "api.github.com", outOfRangeMove) === "body does not match this card's locked pattern", "go card: off-board coordinate → declined");
+
+    const noBodyField = { method: "POST", path: GO_PATH, body: { title: "MOVE: E5" } };
+    ok(fence(GO_CARD, "api.github.com", noBodyField) === "body does not match this card's locked pattern", "go card: move text in the wrong JSON field → declined");
+  }
+
   // 1. init then reserve increments used atomically
   {
     const o = mkObj();

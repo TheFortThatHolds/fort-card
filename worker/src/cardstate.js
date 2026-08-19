@@ -7,9 +7,15 @@
 // Only the card's live state lives here; the secret ciphertext stays in KV. This is the kill-switch's
 // real foundation — KV (eventually consistent, no atomic compare-and-set) cannot provide it.
 
-// Pure fence: given a card record (or null) and an optional host, return a decline reason or null.
-// Exported so the worker and tests share ONE definition of "is this spend allowed right now".
-export function fence(c, host) {
+// Pure fence: given a card record (or null), an optional host, and an optional req
+// {method, path, body}, return a decline reason or null. Exported so the worker and tests
+// share ONE definition of "is this spend allowed right now".
+//
+// allowed_paths / body_match (build-item-38, doc-fort-go-card) are the ENDPOINT-LOCK and
+// BODY-CONSTRAINT beyond allowed_hosts: host-lock alone isn't a use-case lock (api.github.com
+// is ALL of GitHub). When set, they narrow further — a card with neither behaves exactly as
+// before (backward compatible; a lane can only narrow, never widen).
+export function fence(c, host, req) {
   if (!c) return "card revoked";
   if (c.pending) return "card pending owner approval";
   if (c.frozen) return "card frozen";
@@ -17,6 +23,23 @@ export function fence(c, host) {
   if (c.limit != null && (c.used || 0) >= c.limit) return "limit reached";
   if (host != null && (!Array.isArray(c.allowed_hosts) || !c.allowed_hosts.includes(host))) {
     return `host ${host} not allowed for this card`;
+  }
+  if (Array.isArray(c.allowed_paths) && c.allowed_paths.length) {
+    const method = ((req && req.method) || "GET").toUpperCase();
+    const p = req && req.path;
+    const label = method + " " + (p || "");
+    if (!c.allowed_paths.includes(label)) {
+      return `endpoint ${label} not allowed for this card`;
+    }
+  }
+  if (c.body_match) {
+    let re;
+    try { re = new RegExp(c.body_match); } catch { return "card body_match is not a valid pattern"; }
+    const b = req && req.body;
+    const target = c.body_field ? (b && typeof b === "object" ? b[c.body_field] : undefined) : (typeof b === "string" ? b : JSON.stringify(b));
+    if (typeof target !== "string" || !re.test(target)) {
+      return "body does not match this card's locked pattern";
+    }
   }
   return null;
 }
@@ -52,7 +75,7 @@ export class CardState {
     // recreated; a frozen card declines and is NOT un-frozen. The spend can only ever consume.
     if (op === "reserve") {
       const c = await get();
-      const reason = fence(c, body.host);
+      const reason = fence(c, body.host, { method: body.method, path: body.path, body: body.body });
       if (reason) return J({ authorized: false, decline_reason: reason });
       c.used = (c.used || 0) + 1;
       await this.state.storage.put("card", c);
