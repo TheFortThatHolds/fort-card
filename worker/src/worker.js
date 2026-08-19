@@ -79,6 +79,23 @@ const b64d = (s) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
 const json = (o, status = 200) =>
   new Response(JSON.stringify(o, null, 2), { status, headers: { "Content-Type": "application/json" } });
 
+// ── binary-safe upstream body read (build-item-52) — .text() silently corrupts a non-UTF8
+// response (audio/mpeg, image/*, etc.), replacing invalid byte sequences with U+FFFD BEFORE the
+// caller ever sees it. json/text content-types are decoded as before; anything else is read as
+// bytes and returned base64-encoded so the caller can write it straight to disk unmodified. ──
+export async function readUpstreamBody(resp) {
+  const ct = (resp.headers.get("content-type") || "").toLowerCase();
+  if (ct.includes("json")) {
+    const text = await resp.text();
+    try { return JSON.parse(text); } catch { return text; }
+  }
+  if (ct.startsWith("text/") || ct === "") return await resp.text();
+  const bytes = new Uint8Array(await resp.arrayBuffer());
+  let bin = "";
+  for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+  return { _binary: true, content_type: resp.headers.get("content-type") || null, base64: btoa(bin) };
+}
+
 const HUMAN_REQUIRED =
   "Human-in-the-loop required: issuing or re-authorizing a Fort Card is an owner act. " +
   "Present the owner token (FORT_KEY) to do it — an agent token cannot issue an active " +
@@ -562,8 +579,7 @@ export async function chargeCard(env, space, id, req) {
   } else {
     const key = await decrypt(env, space, sealed);
     const httpResp = await fetch(req.url, { method: req.method || "GET", headers: { ...(req.headers || {}), [card.header]: card.header_prefix + key }, body: req.body == null ? undefined : typeof req.body === "string" ? req.body : JSON.stringify(req.body) });
-    const text = await httpResp.text();
-    try { out = JSON.parse(text); } catch { out = text; }
+    out = await readUpstreamBody(httpResp);
     resp = { status: httpResp.status };
   }
   await logEvent(env, space, "card.charge", { id, holder: card.holder || null, host, method: req.method || "GET", status: resp.status, used: card.used, limit: card.limit ?? null });

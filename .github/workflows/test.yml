@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - "worker/**"
+      - "last-mile/**"
       - ".github/workflows/test.yml"
   push:
     branches: [main]
@@ -51,3 +52,20 @@ jobs:
         run: node test/oncegate.test.mjs
       - name: GDPR data rights (export / erase / lapse sweep)
         run: node test/gdpr.test.mjs
+      - name: Binary-safe charge (audio/image responses don't get corrupted)
+        run: node test/binary-charge.test.mjs
+
+  last-mile:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: last-mile
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Syntax-check every module
+        run: for f in src/*.js; do node --check "$f"; done
+      - name: Binary-safe charge (mirrors the wallet's own copy of readUpstreamBody)
+        run: node test/binary-charge.test.mjs
