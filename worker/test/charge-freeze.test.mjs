@@ -73,6 +73,25 @@ const req = { url: `https://${HOST}/v` };
     ok(r.authorized === false && r.decline_reason === "limit reached", "at cap declined");
   }
 
+  // 6. build-item-38: chargeCard wires method/path/body from the real request URL through to the
+  // DO's endpoint+body lock — not just fence() in isolation. A Fort Go Card only ever charges for
+  // its one locked move-comment shape.
+  {
+    const GO_HOST = "api.github.com", GO_PATH = "/repos/TheFortThatHolds/fort-central-config/issues/87/comments";
+    const GO_CARD = { ...CARD, allowed_hosts: [GO_HOST], allowed_paths: ["POST " + GO_PATH], body_field: "body", body_match: "^MOVE: (?:[A-I][1-9]|PASS|RESIGN)$" };
+    fetched = 0;
+    const legal = { url: `https://${GO_HOST}${GO_PATH}`, method: "POST", body: { body: "MOVE: E5" } };
+    const rGood = await chargeCard(mkEnv({ ...GO_CARD }), SPACE, ID, legal);
+    ok(rGood.authorized === true, "go card: legal move charges live through chargeCard");
+    ok(fetched === 1, "go card: legal move reaches the upstream fetch exactly once");
+
+    fetched = 0;
+    const wrongBody = { url: `https://${GO_HOST}${GO_PATH}`, method: "POST", body: { body: "DELETE EVERYTHING" } };
+    const rBad = await chargeCard(mkEnv({ ...GO_CARD }), SPACE, ID, wrongBody);
+    ok(rBad.authorized === false && rBad.decline_reason === "body does not match this card's locked pattern", "go card: off-pattern body declined by chargeCard");
+    ok(fetched === 0, "go card: declined call never reaches the upstream fetch (no side effect)");
+  }
+
   console.log(`\ncharge-freeze: ${pass} passed, ${fail} failed`);
   if (fail) process.exit(1);
 })();

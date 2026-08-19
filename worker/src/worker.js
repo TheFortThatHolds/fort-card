@@ -543,8 +543,12 @@ export async function chargeCard(env, space, id, req) {
 
   await migrateSpaceCards(env, space); // import any legacy KV card into its DO before first spend
   // Atomic reserve: fence + increment happen together inside the card's Durable Object. If it
-  // declines (frozen/revoked/expired/over-cap/off-host) nothing is consumed and we never touch state.
-  const res = await cardOp(env, space, id, "reserve", { host });
+  // declines (frozen/revoked/expired/over-cap/off-host/off-endpoint/body-mismatch) nothing is
+  // consumed and we never touch state. method/path/body let a card's optional endpoint-lock +
+  // body-constraint (build-item-38) narrow beyond the host allowlist.
+  let reqPath;
+  try { reqPath = new URL(req.url).pathname; } catch { reqPath = undefined; }
+  const res = await cardOp(env, space, id, "reserve", { host, method: req.method || "GET", path: reqPath, body: req.body });
   if (!res.authorized) return decline(res.decline_reason || "declined");
   const card = res.card; // the live record the DO just reserved against (has secret name + header)
 
@@ -654,7 +658,7 @@ export default {
       if (path === "/agent/discover") {
         const usable = (await listCardStates(env, aspace))
           .filter((c) => !c.pending && !c.frozen)
-          .map((c) => ({ id: c.id, name: c.name, allowed_hosts: c.allowed_hosts, remaining: c.limit != null ? Math.max(0, c.limit - c.used) : null }));
+          .map((c) => ({ id: c.id, name: c.name, allowed_hosts: c.allowed_hosts, allowed_paths: c.allowed_paths || null, remaining: c.limit != null ? Math.max(0, c.limit - c.used) : null }));
         const secPrefix = K(aspace, "secret", "");
         const secList = await env.VAULT.list({ prefix: secPrefix });
         const requestable = secList.keys.map((k) => k.name.slice(secPrefix.length));
@@ -677,6 +681,12 @@ export default {
       if (!b.secret || !Array.isArray(b.allowed_hosts) || !b.allowed_hosts.length) {
         return json({ error: "secret and a non-empty allowed_hosts array are required" }, 400);
       }
+      if (b.allowed_paths != null && !Array.isArray(b.allowed_paths)) {
+        return json({ error: "allowed_paths, if given, must be an array of \"METHOD /path\" strings" }, 400);
+      }
+      if (b.body_match != null) {
+        try { new RegExp(b.body_match); } catch { return json({ error: "body_match must be a valid regex" }, 400); }
+      }
       // A request declares its cap, OR asks for unlimited (e.g. an email sender scoped to one host).
       // Either way it lands PENDING and inert until the owner approves it — the human sees the cap (or
       // "unlimited") and the single allowed host on approval, and the host scope is the real control.
@@ -697,6 +707,9 @@ export default {
         secret: String(b.secret),
         holder: String(b.repo),
         allowed_hosts: b.allowed_hosts.map(String),
+        allowed_paths: Array.isArray(b.allowed_paths) ? b.allowed_paths.map(String) : null,
+        body_field: b.body_field ? String(b.body_field) : null,
+        body_match: b.body_match ? String(b.body_match) : null,
         header: "Authorization",
         header_prefix: "Bearer ",
         limit,
@@ -1179,6 +1192,12 @@ export default {
         const s = await stepIfSession("card.issue");
         if (s) return s;
       }
+      if (body.allowed_paths != null && !Array.isArray(body.allowed_paths)) {
+        return json({ error: "allowed_paths, if given, must be an array of \"METHOD /path\" strings" }, 400);
+      }
+      if (body.body_match != null) {
+        try { new RegExp(body.body_match); } catch { return json({ error: "body_match must be a valid regex" }, 400); }
+      }
       const id = "card_" + crypto.randomUUID().slice(0, 8);
       const card = {
         id,
@@ -1186,6 +1205,13 @@ export default {
         secret: body.secret,
         holder: body.holder || null,
         allowed_hosts: body.allowed_hosts.map(String),
+        // ENDPOINT-LOCK + BODY-CONSTRAINT (build-item-38, doc-fort-go-card): optional, narrow-only
+        // fences on top of allowed_hosts — a card with neither is unchanged from before this field
+        // existed. allowed_paths entries are exact "METHOD /path" strings; body_match is a regex
+        // tested against req.body[body_field] (or the whole stringified body if body_field is unset).
+        allowed_paths: Array.isArray(body.allowed_paths) ? body.allowed_paths.map(String) : null,
+        body_field: body.body_field ? String(body.body_field) : null,
+        body_match: body.body_match ? String(body.body_match) : null,
         header: body.header || "Authorization",
         header_prefix: body.header_prefix ?? "Bearer ",
         limit: typeof body.limit === "number" ? body.limit : null,
@@ -1201,7 +1227,8 @@ export default {
       await cardOp(env, space, id, "init", { card });
       await registerCard(env, space, id);
       await logEvent(env, space, pending ? "card.request" : "card.issue", {
-        id, name: card.name, secret: card.secret, holder: card.holder, allowed_hosts: card.allowed_hosts, limit: card.limit, pending,
+        id, name: card.name, secret: card.secret, holder: card.holder, allowed_hosts: card.allowed_hosts,
+        allowed_paths: card.allowed_paths, body_match: card.body_match, limit: card.limit, pending,
       });
       if (pending) await notifyCardRequest(env, space, card);
       return json(card);
@@ -1212,6 +1239,7 @@ export default {
     if (path === "/cards" && request.method === "GET") {
       const cards = (await listCardStates(env, space)).map((c) => ({
         id: c.id, name: c.name, secret: c.secret, holder: c.holder ?? null, allowed_hosts: c.allowed_hosts,
+        allowed_paths: c.allowed_paths || null, body_field: c.body_field || null, body_match: c.body_match || null,
         limit: c.limit, used: c.used, remaining: c.limit != null ? Math.max(0, c.limit - c.used) : null,
         expires_at: c.expires_at, frozen: c.frozen, pending: c.pending || false,
       }));
