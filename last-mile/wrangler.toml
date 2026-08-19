@@ -2,11 +2,11 @@ name = "fort-card-last-mile"
 main = "src/worker.js"
 compatibility_date = "2026-06-01"
 
-# The last-mile worker decrypts and injects on YOUR OWN Cloudflare account, so the plaintext
-# key never leaves your infrastructure. This folder is fully self-contained, so the
-# "Deploy to Cloudflare" button can install JUST this worker (not the whole repo):
+# The lockbox worker decrypts and injects on YOUR OWN Cloudflare account, so the plaintext key
+# stays on your infrastructure. This repo is just this worker, so the "Deploy to Cloudflare"
+# button installs it directly from the repo root:
 #
-#   https://deploy.workers.cloudflare.com/?url=https://github.com/TheFortThatHolds/fort-card/tree/main/last-mile
+#   https://deploy.workers.cloudflare.com/?url=https://github.com/TheFortThatHolds/fort-card-lockbox
 #
 # The button auto-provisions the KV namespace below; the worker self-mints its own keys on
 # first boot, so the customer sets nothing.
@@ -14,6 +14,16 @@ compatibility_date = "2026-06-01"
 kv_namespaces = [
   { binding = "LM", id = "PASTE_YOUR_KV_NAMESPACE_ID_HERE" }
 ]
+
+# ── EASY ONBOARDING (claim-code phone-home) ─────────────────────────────────────────────────────
+# Leave these blank to use the manual paste-URL flow (see /bootstrap below). To skip the URL paste,
+# the Fort Card wallet's "Set up your vault" shows you a one-time CLAIM_CODE and your CONTROL_PLANE_URL
+# — paste both here (the Deploy button prompts for [vars]). On first request the lockbox phones home
+# to the control plane with this code + its own URL; it lands PENDING and you tap approve in the
+# wallet. The code is one-time and expires in ~30 min, so deploy promptly after minting it.
+[vars]
+CLAIM_CODE = ""        # one-time code from the wallet's "Set up your vault" (leave blank for manual connect)
+CONTROL_PLANE_URL = "" # the Fort Card wallet/control-plane origin shown next to the claim code
 
 # By hand instead of the button (from this folder):
 #   npx wrangler kv namespace create LM      # paste the id above
