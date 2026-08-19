@@ -1,9 +1,9 @@
-// Fort Card — the LOCKBOX worker.
+// Fort Card — the LAST-MILE worker.
 //
-// This is the thin, stateless worker that every customer runs on their OWN Cloudflare account. It
-// is the ONLY thing that ever touches a plaintext key. Its one job is a charge: take a SEALED
-// secret, open it with the LOCAL master key, inject it into a single outbound request, and return
-// only the response. It holds the customer's MASTER_KEY (the KEK).
+// This is the thin, stateless half of a SPLIT deployment. Its one job is the last mile of a
+// charge: take a SEALED secret, open it with the LOCAL master key, inject it into a single
+// outbound request, and return only the response. It runs on the SECRET OWNER's own Cloudflare
+// account and holds the owner's MASTER_KEY (the KEK).
 //
 // SELF-MINTING KEYS — nobody ever types or sees the root key. On first boot the worker MINTS
 // its own MASTER_KEY and LAST_MILE_KEY (cryptographic randomness, not a human guess) and stores
@@ -13,14 +13,16 @@
 // protects are never co-located. (Advanced: set MASTER_KEY / LAST_MILE_KEY as Worker secrets and
 // the worker uses those instead, never minting — for bring-your-own-key / migration.)
 //
-// THE ONE ARCHITECTURE. The keys never live in the wallet. The control plane holds only
-// ciphertext; the lockbox is the only thing that seals, opens, and injects keys:
-//   • CONTROL PLANE (src/worker.js) holds ONLY ciphertext — sealed secrets, KEK-wrapped DEKs,
-//     cards, the statement. No MASTER_KEY → it CANNOT decrypt.
-//   • LOCKBOX WORKER (this file, on the CUSTOMER's Cloudflare) holds MASTER_KEY. It opens the
-//     ciphertext, injects the key, makes the call, returns the response — all on the customer's box.
+// WHY THE SPLIT EXISTS. In a single-worker deploy the same worker that stores the vault also
+// decrypts and injects the key — so whoever operates it sees plaintext at injection time. Fine
+// for SELF-HOST (you are the operator); NOT fine for a MANAGED service. Splitting the last mile
+// out fixes that cryptographically:
+//   • CONTROL PLANE (src/worker.js with LAST_MILE_URL set) holds ONLY ciphertext — sealed
+//     secrets, KEK-wrapped DEKs, cards, the statement. No MASTER_KEY → it CANNOT decrypt.
+//   • LAST-MILE WORKER (this file, on the OWNER's Cloudflare) holds MASTER_KEY. It opens the
+//     ciphertext, injects the key, makes the call, returns the response — all on the owner's box.
 //
-// The envelope format is identical to the control plane (AES-256-GCM; per-space DEK wrapped under
+// The envelope format is identical to the main worker (AES-256-GCM; per-space DEK wrapped under
 // the KEK), so a secret sealed by either side opens on the other.
 //
 // One file, runs on Cloudflare Workers.
@@ -143,8 +145,35 @@ function ssrfBlocked(host) {
   return false;
 }
 
+// ── phone-home onboarding — if deployed with a CLAIM_CODE + CONTROL_PLANE_URL, the lockbox tells
+// the control plane its own URL + relay token ONCE, gated by that one-time code. The control plane
+// lands it PENDING for the owner to approve (their tap is the gate). This removes the URL
+// copy-paste: the customer typed a short code on the deploy screen instead of copying this worker's
+// URL back. Best-effort + idempotent — a KV flag (phonehome:done) ensures it fires at most once,
+// and it never blocks a real request. The paste-URL /bootstrap flow stays as the fallback. ──
+async function maybePhoneHome(env, selfOrigin) {
+  if (!env.CLAIM_CODE || !env.CONTROL_PLANE_URL || !env.LM) return;
+  if (await env.LM.get("phonehome:done")) return;
+  let cp;
+  try { cp = new URL(env.CONTROL_PLANE_URL); } catch { return; }
+  if (cp.protocol !== "https:") return;
+  const token = await lastMileToken(env); // our minted relay key — the value /bootstrap also hands out
+  await masterKeyB64(env);                 // ensure the KEK is minted too
+  try {
+    const r = await fetch(cp.origin + "/lockbox/phone-home", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "User-Agent": "fort-card-lockbox" },
+      body: JSON.stringify({ claim_code: env.CLAIM_CODE, url: selfOrigin, relay_token: token }),
+    });
+    // ok → landed pending; 403 → bad/expired/already-used code (retrying won't help). Either way, stop.
+    if (r.ok || r.status === 403) await env.LM.put("phonehome:done", new Date().toISOString());
+  } catch {
+    // network blip — leave the flag unset so the next request retries.
+  }
+}
+
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     // Either a KV binding to mint into, or both keys supplied as secrets. Otherwise we can't run.
     if (!env.LM && (!env.MASTER_KEY || !env.LAST_MILE_KEY)) {
       return json({ error: "server not configured — bind a KV namespace `LM` (keys self-mint) or set MASTER_KEY + LAST_MILE_KEY secrets" }, 500);
@@ -152,8 +181,12 @@ export default {
     const url = new URL(request.url);
     const path = url.pathname.replace(/\/+$/, "") || "/";
 
+    // First-request onboarding: phone home once (fire-and-forget so it never blocks the response).
+    if (ctx && typeof ctx.waitUntil === "function") ctx.waitUntil(maybePhoneHome(env, url.origin));
+    else await maybePhoneHome(env, url.origin);
+
     if (path === "/") {
-      return json({ name: "fort-card-last-mile", ok: true, role: "lockbox: decrypt+inject on the customer's own infra" });
+      return json({ name: "fort-card-last-mile", ok: true, role: "decrypt+inject on the owner's own infra" });
     }
 
     // ── /bootstrap — FIRST-CALL-WINS connect credentials. Right after deploy, the owner fetches
