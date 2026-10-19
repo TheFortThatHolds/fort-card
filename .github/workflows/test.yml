@@ -24,6 +24,8 @@ jobs:
         run: for f in src/*.js; do node --check "$f"; done
       - name: Reusable tools and complete recent log
         run: node test/tools.test.mjs
+      - name: MCP tool reuse
+        run: node test/connect-tools.test.mjs
       - name: WebAuthn roundtrip
         run: node test/webauthn.test.mjs
       - name: Agent-bearer lifecycle
