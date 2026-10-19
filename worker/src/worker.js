@@ -68,6 +68,7 @@ import { isSubscribed, createCheckout, confirmCheckout, priceCents, billingSumma
 import { sendWelcomeEmail, sendSignupAlert, sendCancelEmail, sendResumeEmail, sendLapseEmail, sendPurgeReminderEmail, emailConfigured } from "./email.js";
 import { handleConnect } from "./connect.js";
 import { CardState } from "./cardstate.js";
+import { credentialFormat } from "./credential-format.js";
 import { OnceGate } from "./oncegate.js";
 // Durable Object classes must be exported from the Worker's entry module so the runtime can bind them.
 export { CardState, OnceGate };
@@ -716,6 +717,8 @@ export default {
         }
         limit = charges;
       }
+      let credential;
+      try { credential = credentialFormat(b); } catch (e) { return json({ error: e.message }, 400); }
       const rid = "card_" + crypto.randomUUID().slice(0, 8);
       const reqCard = {
         id: rid,
@@ -726,8 +729,7 @@ export default {
         allowed_paths: Array.isArray(b.allowed_paths) ? b.allowed_paths.map(String) : null,
         body_field: b.body_field ? String(b.body_field) : null,
         body_match: b.body_match ? String(b.body_match) : null,
-        header: "Authorization",
-        header_prefix: "Bearer ",
+        ...credential,
         limit,
         used: 0,
         expires_at: null,
