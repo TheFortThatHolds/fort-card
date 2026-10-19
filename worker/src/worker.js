@@ -69,6 +69,7 @@ import { sendWelcomeEmail, sendSignupAlert, sendCancelEmail, sendResumeEmail, se
 import { handleConnect } from "./connect.js";
 import { CardState } from "./cardstate.js";
 import { credentialFormat } from "./credential-format.js";
+import { selectToolCard, toolCards, recentEvents } from "./tools.js";
 import { OnceGate } from "./oncegate.js";
 // Durable Object classes must be exported from the Worker's entry module so the runtime can bind them.
 export { CardState, OnceGate };
@@ -117,7 +118,9 @@ export async function cardOp(env, space, id, op, payload) {
   const r = await cardDO(env, space, id).fetch("https://do/" + op, {
     method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload || {}),
   });
-  return r.json();
+  const result=await r.json();
+  if(result?.alias_to && !["status","init","alias","init-if-absent"].includes(op)) return cardOp(env,space,result.alias_to,op,payload);
+  return result;
 }
 const cardIdxPrefix = (space) => K(space, "cardidx", "");
 export async function registerCard(env, space, id) { await env.VAULT.put(cardIdxPrefix(space) + id, "1"); }
@@ -154,7 +157,7 @@ export async function listCardStates(env, space) {
     const page = await env.VAULT.list({ prefix, cursor });
     for (const k of page.keys) {
       const c = await cardOp(env, space, k.name.slice(prefix.length), "status");
-      if (c) out.push(c);
+      if (c && !c.alias_to) out.push(c);
     }
     cursor = page.list_complete ? undefined : page.cursor;
   } while (cursor);
@@ -283,7 +286,7 @@ export async function buildExport(env, space) {
     } while (cursor);
     events.sort((a, b) => (a.ts < b.ts ? 1 : a.ts > b.ts ? -1 : 0)); // newest first
   }
-  const cards = (await listCardStates(env, space)).map((c) => ({
+  const cards = toolCards(await listCardStates(env, space)).map((c) => ({
     id: c.id, name: c.name, secret: c.secret, allowed_hosts: c.allowed_hosts, limit: c.limit,
     used: c.used, holder: c.holder ?? null, expires_at: c.expires_at ?? null, frozen: !!c.frozen, pending: !!c.pending,
   }));
@@ -673,14 +676,17 @@ export default {
         return json({ error: "this space's Fort Card subscription is inactive — the owner must subscribe in the wallet", code: "subscribe_required" }, 402);
       }
       if (path === "/agent/discover") {
-        const usable = (await listCardStates(env, aspace))
-          .filter((c) => !c.pending && !c.frozen)
-          .map((c) => ({ id: c.id, name: c.name, allowed_hosts: c.allowed_hosts, allowed_paths: c.allowed_paths || null, remaining: c.limit != null ? Math.max(0, c.limit - c.used) : null }));
+        const allToolCards=toolCards(await listCardStates(env,aspace));
+        const usable = allToolCards
+          .filter((c) => !c.pending && !c.frozen && (!c.expires_at || Date.parse(c.expires_at)>Date.now()) && (c.limit==null || c.used<c.limit))
+          .map((c) => ({ id: c.id, name: c.secret, secret: c.secret, allowed_hosts: c.allowed_hosts, allowed_paths: c.allowed_paths || null, remaining: c.limit != null ? Math.max(0, c.limit - c.used) : null }));
         const secPrefix = K(aspace, "secret", "");
         const secList = await env.VAULT.list({ prefix: secPrefix });
-        const requestable = secList.keys.map((k) => k.name.slice(secPrefix.length));
+        const requestable = secList.keys.map((k) => k.name.slice(secPrefix.length)).filter(secret=>!allToolCards.some(c=>c.secret===secret));
         return json({
           usable_cards: usable,
+          tool_cards: allToolCards,
+          pending_cards: allToolCards.filter(c=>c.pending || c.frozen),
           requestable_secrets: requestable,
           push_subscriptions: (await listSubscriptions(env, aspace)).length,
           note: "Charge a usable card with /cards/:id/use. To get a new one: POST /agent/request {repo, pr, secret, allowed_hosts} — it lands pending for the owner to approve, then the wake-back posts to your PR.",
@@ -698,6 +704,8 @@ export default {
       if (!b.secret || !Array.isArray(b.allowed_hosts) || !b.allowed_hosts.length) {
         return json({ error: "secret and a non-empty allowed_hosts array are required" }, 400);
       }
+      const existingTool=selectToolCard(await listCardStates(env,aspace),String(b.secret));
+      if(existingTool)return json({ok:true,reused:true,pending:!!existingTool.pending,frozen:!!existingTool.frozen,card:existingTool.id,allowed_hosts:existingTool.allowed_hosts,note:"Reuse this tool. Frozen, expired or capped access needs owner management of this same card, not a new job card."});
       if (b.allowed_paths != null && !Array.isArray(b.allowed_paths)) {
         return json({ error: "allowed_paths, if given, must be an array of \"METHOD /path\" strings" }, 400);
       }
@@ -707,28 +715,22 @@ export default {
       // A request declares its cap, OR asks for unlimited (e.g. an email sender scoped to one host).
       // Either way it lands PENDING and inert until the owner approves it — the human sees the cap (or
       // "unlimited") and the single allowed host on approval, and the host scope is the real control.
-      let limit;
-      if (b.unlimited === true || b.charges === "unlimited" || b.limit === null) {
-        limit = null; // open-ended — the owner approves this knowingly; the allowed_hosts scope bounds it
-      } else {
-        const charges = Number(b.charges != null ? b.charges : b.limit);
-        if (!Number.isInteger(charges) || charges < 1) {
-          return json({ error: "charges required: a positive integer, OR pass unlimited:true for an open-ended card (e.g. an email sender). Either way it lands pending for the owner to approve." }, 400);
-        }
-        limit = charges;
-      }
+      const reusableMode=(await env.VAULT.get(K(aspace,"tools","reusable")))==="true";
+      const limit=reusableMode?null:(b.unlimited===true||b.charges==="unlimited"||b.limit==null?null:Number(b.charges??b.limit));
+      if(limit!=null&&(!Number.isInteger(limit)||limit<1))return json({error:"limit must be a positive integer or null"},400);
       let credential;
       try { credential = credentialFormat(b); } catch (e) { return json({ error: e.message }, 400); }
-      const rid = "card_" + crypto.randomUUID().slice(0, 8);
+      const digest=await crypto.subtle.digest("SHA-256",new TextEncoder().encode(String(b.secret)));
+      const rid="tool_"+Array.from(new Uint8Array(digest)).map(v=>v.toString(16).padStart(2,"0")).join("").slice(0,24);
       const reqCard = {
         id: rid,
-        name: b.label || "request from " + b.repo,
+        name: String(b.secret),
         secret: String(b.secret),
-        holder: String(b.repo),
+        holder: null,
         allowed_hosts: b.allowed_hosts.map(String),
-        allowed_paths: Array.isArray(b.allowed_paths) ? b.allowed_paths.map(String) : null,
-        body_field: b.body_field ? String(b.body_field) : null,
-        body_match: b.body_match ? String(b.body_match) : null,
+        allowed_paths: reusableMode?null:(Array.isArray(b.allowed_paths)?b.allowed_paths.map(String):null),
+        body_field: reusableMode?null:(b.body_field?String(b.body_field):null),
+        body_match: reusableMode?null:(b.body_match?String(b.body_match):null),
         ...credential,
         limit,
         used: 0,
@@ -738,7 +740,8 @@ export default {
         wake: b.pr ? { repo: String(b.repo), pr: Number(b.pr) } : null,
         created: new Date().toISOString(),
       };
-      await cardOp(env, aspace, rid, "init", { card: reqCard });
+      const initialized=await cardOp(env,aspace,rid,"init-if-absent",{card:reqCard});
+      if(!initialized.created)return json({ok:true,reused:true,pending:!!initialized.card.pending,card:rid,note:"This tool already has a card."});
       await registerCard(env, aspace, rid);
       await logEvent(env, aspace, "card.request", { id: rid, name: reqCard.name, secret: reqCard.secret, allowed_hosts: reqCard.allowed_hosts, limit, repo: b.repo });
       await notifyCardRequest(env, aspace, reqCard);
@@ -1198,12 +1201,33 @@ export default {
       return json({ ok: true, connected: false });
     }
 
+    // Owner-approved consolidation; old IDs forward to the same tool's controls and counter.
+    if(path==="/tools/consolidate" && request.method==="POST"){
+      if(!human)return json({error:HUMAN_REQUIRED},403);
+      const step=await stepIfSession("tools.consolidate");if(step)return step;
+      const before=await listCardStates(env,space),changed=[];
+      for(const representative of toolCards(before)){
+        const group=before.filter(c=>c.secret===representative.secret),approved=group.filter(c=>!c.pending);
+        if(!approved.length)continue;
+        const canonical=selectToolCard(approved,representative.secret),hosts=[...new Set(approved.flatMap(c=>c.allowed_hosts||[]))];
+        const format=hosts.length===1&&hosts[0]==="dev.to"?credentialFormat({allowed_hosts:hosts}):{header:canonical.header,header_prefix:canonical.header_prefix};
+        const next={...canonical,...format,name:canonical.secret,holder:null,allowed_hosts:hosts,allowed_paths:null,body_field:null,body_match:null,limit:null,expires_at:null};
+        await cardOp(env,space,canonical.id,"init",{card:next});
+        for(const old of group)if(old.id!==canonical.id)await cardOp(env,space,old.id,"alias",{target:canonical.id});
+        changed.push({secret:canonical.secret,card:canonical.id,aliases:group.length-1});
+      }
+      await env.VAULT.put(K(space,"tools","reusable"),"true");
+      await logEvent(env,space,"tools.consolidate",{tools:changed});return json({ok:true,tools:changed});
+    }
+
     // ── issue a card (owner → active; agent → pending, inert until the owner approves) ──
     if (path === "/cards" && request.method === "POST") {
       if (!body.name || !body.secret || !Array.isArray(body.allowed_hosts) || body.allowed_hosts.length === 0) {
         return json({ error: "name, secret, and a non-empty allowed_hosts array are required" }, 400);
       }
       { const g = requireSub(); if (g) return g; }
+      const existingTool=selectToolCard(await listCardStates(env,space),String(body.secret));
+      if(existingTool)return json({...existingTool,reused:true});
       const pending = !human; // an agent can ask, but never mint its own live allowance
       if (!pending) {
         // a human issuing an ACTIVE card is an owner act — fresh tap (sessions only).
@@ -1267,14 +1291,8 @@ export default {
     // ── the statement: read the append-only audit ledger (newest first) ──
     if (path === "/events" && request.method === "GET") {
       const limit = Math.min(parseInt(url.searchParams.get("limit") || "100", 10) || 100, 1000);
-      const list = await env.VAULT.list({ prefix: K(space, "event", "") });
-      const keys = list.keys.map((k) => k.name).sort().reverse().slice(0, limit);
-      const events = [];
-      for (const name of keys) {
-        const raw = await env.VAULT.get(name);
-        if (raw) events.push(JSON.parse(raw));
-      }
-      return json({ events });
+      const events=await recentEvents(env.VAULT,K(space,"event",""),Math.max(1,limit));
+      return new Response(JSON.stringify({events}),{headers:{"Content-Type":"application/json","Cache-Control":"no-store"}});
     }
 
     // ── export the WHOLE statement as a downloadable file (it's the owner's data — one tap, no

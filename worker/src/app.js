@@ -225,8 +225,9 @@ label{font-size:13px;color:#cdc2af;display:block;margin-top:10px}
     <div id="view-log" class="hide">
       <button class="btn sm back" data-back>← Back</button>
       <h2>Log — agent activity</h2>
-      <p class="muted" style="margin-bottom:14px">The last 10 acts in your space, newest first: requests, approvals, charges, declines, freezes, key rolls. Export pulls the full history.</p>
+      <p class="muted" style="margin-bottom:14px">The last 50 acts in your space, newest first: requests, approvals, charges, declines, freezes, key rolls. Export pulls the full history.</p>
       <a class="btn sm" id="logexport" href="/events/export" download style="display:inline-block;margin-bottom:14px">⬇ Export full log</a>
+      <button class="btn sm" id="logrefresh">Refresh log</button>
       <div id="events" class="card"><div class="muted">Loading…</div></div>
     </div>
 
@@ -322,6 +323,10 @@ function cardView(c,pending){
   return el;
 }
 
+async function consolidateTools(){
+  if(!confirm('Consolidate each stored key into one reusable tool? Approved hosts are combined and job limits removed. Old IDs keep working as aliases. Pending keys still require approval.'))return;
+  act(async()=>{const token=await stepUp('tools.consolidate');await jget('/tools/consolidate',{method:'POST',headers:{'X-Fort-Action':token}})},'Tools consolidated');
+}
 async function load(){
   // Run the independent sections concurrently — on a slow worker, four serial round-trips stack into
   // a long wait (and a longer window to time out). Each still owns its own try/catch so one failing
@@ -331,7 +336,7 @@ async function load(){
       const cards=(await jget('/cards')).cards||[];
       const pend=cards.filter(c=>c.pending),live=cards.filter(c=>!c.pending);
       const pe=$('#pending');pe.innerHTML='';if(!pend.length)pe.innerHTML='<div class="muted">None.</div>';else pend.forEach(c=>pe.append(cardView(c,true)));
-      const ce=$('#cards');ce.innerHTML='';if(!live.length)ce.innerHTML='<div class="muted">No cards yet.</div>';else live.forEach(c=>ce.append(cardView(c,false)));
+      const ce=$('#cards');ce.innerHTML='';const organize=mkbtn('Consolidate reusable tools');organize.onclick=consolidateTools;ce.append(organize);live.forEach(c=>ce.append(cardView(c,false)));
     }catch(e){$('#cards').innerHTML='<div class="muted">'+e.message+'</div>'}})(),
     (async()=>{try{
       const pk=(await jget('/passkey/list')).passkeys||[];hasPk=pk.length>0;
@@ -532,9 +537,13 @@ document.querySelectorAll('[data-back]').forEach(b=>b.onclick=()=>showView('home
 const EVNAMES={'card.request':'Card requested','card.approve':'Card approved','card.unfreeze':'Card unfrozen','card.freeze':'Card frozen','card.revoke':'Card revoked','card.issue':'Card issued','card.charge':'Charge','card.decline':'Declined','card.wake':'Agent woken','card.wake_skip':'Wake skipped','secret.store':'Key stored','vault.rotate':'Key rolled over'};
 function evName(t){return EVNAMES[t]||String(t||'').replace(/[._]/g,' ').replace(/^./,c=>c.toUpperCase())}
 function evDetail(e){const d=[];if(e.name)d.push(e.name);if(e.host)d.push(e.host);if(e.status!=null)d.push('→ '+e.status);if(e.allowed_hosts&&e.allowed_hosts.length)d.push(e.allowed_hosts.join(', '));if(e.limit!=null)d.push('cap '+e.limit);if(e.repo)d.push(e.repo);if(e.reason)d.push(e.reason);if(e.id)d.push(e.id);return d.join(' · ')}
-function evTime(ts){return String(ts||'').replace('T',' ').slice(0,16)}
-async function loadEvents(){try{const ev=(await jget('/events?limit=10')).events||[];$('#events').innerHTML=ev.length?ev.map(e=>'<div class="ev"><div class="row"><span class="evtype">'+evName(e.type)+'</span><span class="muted">'+evTime(e.ts)+'</span></div>'+(evDetail(e)?'<div class="muted evd">'+evDetail(e)+'</div>':'')+'</div>').join(''):'<div class="muted">No activity yet.</div>'}catch(e){$('#events').innerHTML='<div class="muted">'+e.message+'</div>'}}
+function evTime(ts){const d=new Date(ts);return Number.isNaN(d.getTime())?String(ts||''):d.toLocaleString()}
+let loadingEvents=false;
+async function loadEvents(){if(loadingEvents)return;loadingEvents=true;try{const ev=(await jget('/events?limit=50')).events||[];$('#events').innerHTML=ev.length?ev.map(e=>'<div class="ev"><div class="row"><span class="evtype">'+evName(e.type)+'</span><span class="muted">'+evTime(e.ts)+'</span></div>'+(evDetail(e)?'<div class="muted evd">'+evDetail(e)+'</div>':'')+'</div>').join(''):'<div class="muted">No activity yet.</div>'}catch(e){$('#events').innerHTML='<div class="muted">'+e.message+'</div>'}finally{loadingEvents=false}}
 
+$('#logrefresh').onclick=()=>loadEvents();
+setInterval(()=>{if(!document.hidden&&!$('#view-log').classList.contains('hide'))loadEvents()},15000);
+document.addEventListener('visibilitychange',()=>{if(!document.hidden&&!$('#view-log').classList.contains('hide'))loadEvents()});
 (async()=>{
   let w;try{w=await jget('/whoami')}catch{$('#signin').classList.remove('hide');return regSW()}
   me=(w.login?w.login+' · ':'')+w.space;$('#who').textContent=me;

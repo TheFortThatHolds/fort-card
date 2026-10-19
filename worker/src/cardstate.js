@@ -59,6 +59,17 @@ export class CardState {
     if (op === "init") { await this.state.storage.put("card", body.card); return J(body.card); }
 
     if (op === "status") return J((await get()) || null);
+    if(op==="init-if-absent"){
+      return this.state.storage.transaction(async tx=>{
+        const existing=await tx.get("card");if(existing)return J({created:false,card:existing});
+        await tx.put("card",body.card);return J({created:true,card:body.card});
+      });
+    }
+    if(op==="alias"){
+      const c=await get();if(!c)return J({error:"no such card"},404);
+      await this.state.storage.put("card",{...c,alias_to:body.target});return J({alias_to:body.target});
+    }
+    const existing=await get();if(existing?.alias_to)return J({alias_to:existing.alias_to});
 
     if (op === "freeze") { // freeze=true (any holder) / false = unfreeze+approve (owner-gated upstream)
       const c = await get();
