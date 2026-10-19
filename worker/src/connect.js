@@ -19,6 +19,8 @@
 import { resolveSession, oauthConfigured, verify, readCookie } from "./auth.js";
 import { K, chargeCard, logEvent, notifyCardRequest, spaceSubscribed, listCardStates, cardOp, registerCard } from "./worker.js";
 import { consumeOnce } from "./oncegate.js";
+import { selectToolCard, toolCards } from "./tools.js";
+import { credentialFormat } from "./credential-format.js";
 
 const CODE_TTL = 600;                 // auth code: 10 min
 const TOKEN_TTL = 60 * 60 * 24 * 30;  // agent pass: 30 days
@@ -261,7 +263,7 @@ const TOOLS = [
   },
   {
     name: "ask_card",
-    description: "ASK the owner for a NEW card (or recharge). Lands PENDING and buzzes the owner's phone to approve or deny — you cannot approve it yourself. REQUIRES a wake target (repo + pr): on approval the wallet posts a comment to that PR to RESUME you. If you're an interactive session with no PR yet, open one first to be your listening post, watch it, THEN ask.",
+    description: "Reuse the existing card for this stored key across jobs. Only if the key has no card, ASK the owner for one reusable tool card. Lands PENDING and buzzes the owner's phone to approve or deny — you cannot approve it yourself. REQUIRES a wake target (repo + pr): on approval the wallet posts a comment to that PR to RESUME you. If you're an interactive session with no PR yet, open one first to be your listening post, watch it, THEN ask.",
     inputSchema: {
       type: "object",
       required: ["name", "secret", "allowed_hosts", "repo", "pr"],
@@ -277,22 +279,23 @@ const TOOLS = [
   },
 ];
 
-async function callTool(name, args, env, principal) {
+export async function callTool(name, args, env, principal) {
   const space = principal.space;
   if (name === "wallet_map") {
     const usable_cards = [], pending_cards = [];
-    for (const c of await listCardStates(env, space)) {
+    const tools=toolCards(await listCardStates(env,space));
+    for (const c of tools) {
       const view = {
-        id: c.id, name: c.name, allowed_hosts: c.allowed_hosts,
+        id: c.id, name: c.secret, secret: c.secret, allowed_hosts: c.allowed_hosts,
         remaining: c.limit != null ? Math.max(0, c.limit - c.used) : null,
       };
-      if (!c.pending && !c.frozen) usable_cards.push(view);
-      else pending_cards.push({ ...view, state: c.pending ? "pending owner approval" : "frozen" });
+      if(!c.pending&&!c.frozen&&(!c.expires_at||Date.parse(c.expires_at)>Date.now())&&(c.limit==null||c.used<c.limit))usable_cards.push(view);
+      else pending_cards.push({...view,state:c.pending?"pending owner approval":c.frozen?"frozen":c.expires_at&&Date.parse(c.expires_at)<=Date.now()?"expired":"limit reached"});
     }
     // secrets stored in the wallet that have no card yet — the agent can ask_card for these
     const secPrefix = K(space, "secret", "");
     const secList = await env.VAULT.list({ prefix: secPrefix });
-    const requestable_secrets = secList.keys.map((k) => k.name.slice(secPrefix.length));
+    const requestable_secrets = secList.keys.map((k) => k.name.slice(secPrefix.length)).filter(secret=>!tools.some(c=>c.secret===secret));
     return {
       space,
       usable_cards,
@@ -308,21 +311,26 @@ async function callTool(name, args, env, principal) {
   if (name === "ask_card") {
     if (!args.name || !args.secret || !Array.isArray(args.allowed_hosts) || !args.allowed_hosts.length)
       return { error: "name, secret, and a non-empty allowed_hosts are required" };
+    const existing=selectToolCard(await listCardStates(env,space),String(args.secret));
+    if(existing)return {ok:true,reused:true,card:existing.id,pending:!!existing.pending,frozen:!!existing.frozen,note:"This key already has a reusable tool card. Use it across jobs; manage any freeze/expiry/limit on this same card."};
     if (!args.repo || !args.pr)
       return { error: "ask_card needs a wake target: repo + pr. On approval the wallet posts a wake-back comment to that PR to resume you. No PR yet (interactive session)? Open one first as your listening post, start watching it, then ask again." };
-    const id = "card_" + crypto.randomUUID().slice(0, 8);
+    const digest=await crypto.subtle.digest("SHA-256",new TextEncoder().encode(String(args.secret)));
+    const id="tool_"+Array.from(new Uint8Array(digest)).map(v=>v.toString(16).padStart(2,"0")).join("").slice(0,24);
+    const reusable=(await env.VAULT.get(K(space,"tools","reusable")))==="true";
     const card = {
-      id, name: String(args.name), secret: String(args.secret),
-      holder: principal.login || null,
+      id, name: String(args.secret), secret: String(args.secret),
+      holder: null,
       allowed_hosts: args.allowed_hosts.map(String),
-      header: "Authorization", header_prefix: "Bearer ",
-      limit: typeof args.limit === "number" ? args.limit : null,
+      ...credentialFormat({allowed_hosts:args.allowed_hosts}),
+      limit: reusable?null:(typeof args.limit === "number" ? args.limit : null),
       used: 0, expires_at: null,
       frozen: true, pending: true, // inert until the owner approves on their phone
       wake: { repo: String(args.repo), pr: Number(args.pr) }, // on approval the wallet wakes you here
       created: new Date().toISOString(),
     };
-    await cardOp(env, space, id, "init", { card });
+    const initialized=await cardOp(env,space,id,"init-if-absent",{card});
+    if(!initialized.created)return {ok:true,reused:true,card:id,pending:!!initialized.card.pending,note:"This tool already has a card."};
     await registerCard(env, space, id);
     await logEvent(env, space, "card.request", { id, name: card.name, secret: card.secret, allowed_hosts: card.allowed_hosts, limit: card.limit, wake: card.wake });
     await notifyCardRequest(env, space, card);
